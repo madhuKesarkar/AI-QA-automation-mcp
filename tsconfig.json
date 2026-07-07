@@ -2,11 +2,13 @@
   "compilerOptions": {
     "target": "ES2021",
     "module": "commonjs",
-    "moduleResolution": "node",
+    "moduleResolution": "node10",
+    "ignoreDeprecations": "6.0",
     "esModuleInterop": true,
     "strict": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "types": ["node"]
   },
   "exclude": ["node_modules", ".features-gen", "playwright-report", "test-results"]
 }
