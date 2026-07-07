@@ -1,0 +1,23 @@
+{
+  "name": "qa-automation-mcp",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "npx bddgen && npx playwright test",
+    "test:smoke": "npx bddgen && npx playwright test --grep @smoke",
+    "test:sanity": "npx bddgen && npx playwright test --grep @sanity",
+    "test:functional": "npx bddgen && npx playwright test --grep @functional",
+    "report": "npx playwright show-report",
+    "install:browsers": "npx playwright install --with-deps chromium"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^26.1.0",
+    "playwright-bdd": "^9.2.0",
+    "typescript": "^6.0.3"
+  }
+}
