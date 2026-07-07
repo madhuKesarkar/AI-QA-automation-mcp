@@ -16,10 +16,22 @@ The existing single-site "Bulk upload rates" wizard entry point and its first st
 
 ## Test cases
 
-| ID | Tier | Scenario | Verified against |
-|---|---|---|---|
-| TC-01 | smoke | "Bulk upload rates" is reachable from At a Glance → Select an action | Live app, confirmed menu item exists |
-| TC-02 | smoke | The wizard shows all three steps: Upload rate sheet, Review rates, Schedule billing | Live app accessibility tree — confirmed exact step labels |
-| TC-03 | sanity | The upload step offers a file drop zone with the expected accepted file types | Live app — confirmed accepted types: .png, .jpg, .jpeg, .csv, .doc, .docx, .pdf, .xls, .xlsx |
-| TC-04 | sanity | "Create rates manually" is offered as an alternative to uploading a file | Live app, confirmed button present |
-| TC-05 | sanity | Cancel closes the wizard and returns to At a Glance | Live app, confirmed by direct interaction |
+**TC-01 · smoke**
+"Bulk upload rates" is reachable from At a Glance → Select an action
+→ *Verified: live app, confirmed menu item exists*
+
+**TC-02 · smoke**
+The wizard shows all three steps: Upload rate sheet, Review rates, Schedule billing
+→ *Verified: live app accessibility tree, confirmed exact step labels*
+
+**TC-03 · sanity**
+The upload step offers a file drop zone with the expected accepted file types
+→ *Verified: live app, confirmed accepted types — .png, .jpg, .jpeg, .csv, .doc, .docx, .pdf, .xls, .xlsx*
+
+**TC-04 · sanity**
+"Create rates manually" is offered as an alternative to uploading a file
+→ *Verified: live app, confirmed button present*
+
+**TC-05 · sanity**
+Cancel closes the wizard and returns to At a Glance
+→ *Verified: live app, confirmed by direct interaction*
