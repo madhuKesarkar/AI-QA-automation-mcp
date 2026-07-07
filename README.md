@@ -13,11 +13,11 @@ reference rather than code).
 
 ```
 tests/
-  features/        Gherkin .feature files — one per Linear issue, human-and-agent-editable
-    ENG-482-bulk-invite.feature
-    ENG-482-bulk-invite.md     ← test case table + traceability, the durable record
+  features/        Gherkin .feature files — one per feature, human-and-agent-editable
+    bulk-upload-rates-single-site.feature
+    bulk-upload-rates-single-site.md   ← test case table + traceability, the durable record
   steps/            Step definitions (glue code), reused across features
-    invite.steps.ts
+    bulk-upload-rates-single-site.steps.ts
   fixtures/         Seed data / API helpers for Given steps that need setup
 playwright.config.ts
 .github/workflows/qa.yml   CI: smoke+sanity on PRs, full suite nightly
@@ -37,7 +37,7 @@ is gitignored — never edit it directly.
 ```bash
 npm install
 npm run install:browsers   # first time only, downloads Chromium
-export BASE_URL=http://localhost:3000   # or your staging URL
+export BASE_URL=https://schools.qa.bwtest.net   # or your staging URL
 
 npm test                # full suite
 npm run test:smoke      # smoke only
@@ -49,14 +49,16 @@ npm run report          # opens the last HTML report
 
 ## Adding a new feature's tests
 
-1. Copy the pattern in `tests/features/ENG-482-bulk-invite.feature` — one
-   `.feature` file per Linear issue, named `<ISSUE-KEY>-<short-name>.feature`.
-2. Add a matching `<ISSUE-KEY>-<short-name>.md` with the test case table and
-   source-doc links (PRD section, Figma frame, spec section) — this is what
-   makes the suite auditable later.
+1. Copy the pattern in `tests/features/bulk-upload-rates-single-site.feature` —
+   one `.feature` file per feature, named `<feature-slug>.feature`.
+2. Add a matching `<feature-slug>.md` with the test case table and
+   source references (PRD section, Figma frame, or "verified against live
+   app" if there's no written spec) — this is what makes the suite
+   auditable later. Never invent a scenario you haven't confirmed against
+   either a spec or the real app; flag it as an open question instead.
 3. Add/reuse step definitions in `tests/steps/`.
-4. Get the plan (`.md` + `.feature`) reviewed and approved on the Linear
-   issue **before** wiring it into CI — see the SOP's review-gate step.
+4. Get the plan (`.md` + `.feature`) reviewed and approved before wiring
+   it into CI — see the SOP's review-gate step.
 
 ## CI behavior
 
