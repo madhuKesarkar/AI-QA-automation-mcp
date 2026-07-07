@@ -17,8 +17,13 @@ export default defineConfig({
     ['html', { open: 'never' }],
     ['list'],
   ],
+  webServer: {
+    command: 'npx http-server demo-app -p 4173 -s',
+    url: 'http://localhost:4173',
+    reuseExistingServer: !process.env.CI,
+  },
   use: {
-    baseURL: process.env.BASE_URL || 'http://localhost:3000',
+    baseURL: process.env.BASE_URL || 'http://localhost:4173',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
