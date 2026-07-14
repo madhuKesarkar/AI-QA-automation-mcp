@@ -11,3 +11,4 @@ allure-report/
 agent/dist/
 agent/storageState.*.json
 project-envs/
+storageState.*.json

@@ -19,6 +19,12 @@ export default defineConfig({
   ],
   use: {
     baseURL: process.env.BASE_URL || 'https://schools.sandbox.bwtest.net',
+    // Reuses a session captured once via `npx playwright codegen
+    // --save-storage=storageState.json <url>` (log in manually, close the
+    // browser). Without this, every test starts logged out — and since
+    // our feature files assume you're already on the billing dashboard
+    // (no login steps), tests will fail at the first step without it.
+    storageState: process.env.STORAGE_STATE || undefined,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -26,7 +32,7 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: { ...devices['Desktop Chrome'], channel: 'chrome' },
     },
   ],
 });
