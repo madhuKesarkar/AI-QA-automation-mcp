@@ -6,3 +6,8 @@ allure-results/
 allure-report/
 .env
 *.log
+
+# agent orchestrator
+agent/dist/
+agent/storageState.*.json
+project-envs/

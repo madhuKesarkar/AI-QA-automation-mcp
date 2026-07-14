@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# bw-qa-loop — launcher. The host needs only Docker; everything else runs
+# inside the sandbox container built from agent/Dockerfile.
+#
+# For local development without Docker (e.g. iterating on the orchestrator
+# itself), set BW_QA_LOOP_LOCAL=1 to run directly with the host's Node
+# instead. This is NOT the supported path for real runs — no sandboxing,
+# and you need Node 20+ and the deps installed yourself.
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+
+IMAGE_NAME="bw-qa-loop:latest"
+
+if [[ "${1:-}" == "doctor" ]] && ! command -v docker &> /dev/null; then
+  echo "✗ Docker: not found on PATH"
+  echo "  Install Docker Desktop or docker-ce, then re-run."
+  exit 2
+fi
+
+if [[ "${BW_QA_LOOP_LOCAL:-}" == "1" ]]; then
+  echo "[bw-qa-loop] BW_QA_LOOP_LOCAL=1 set — running directly with host Node (unsandboxed)."
+  cd agent
+  if [[ ! -d dist ]]; then
+    npm install
+    npm run build
+  fi
+  exec node dist/cli.js "$@"
+fi
+
+if ! command -v docker &> /dev/null; then
+  echo "[bw-qa-loop] Docker not found. Install Docker, or set BW_QA_LOOP_LOCAL=1 to run unsandboxed." >&2
+  exit 2
+fi
+
+if [[ ! -f .env ]]; then
+  echo "[bw-qa-loop] No .env found in repo root. Copy agent/.env.example to .env and fill it in." >&2
+  exit 2
+fi
+
+# Build once, cached after. Rebuilds automatically when Dockerfile or
+# package.json change (docker handles this via layer caching).
+docker build -q -f agent/Dockerfile -t "$IMAGE_NAME" . > /dev/null
+
+docker run --rm \
+  --env-file .env \
+  -v "$REPO_ROOT/project-envs:/workspace/project-envs" \
+  -v "$REPO_ROOT/agent/selector-registry.json:/workspace/agent/selector-registry.json" \
+  -v "$REPO_ROOT/agent/storageState.sandbox.json:/workspace/agent/storageState.sandbox.json:ro" \
+  -v "$REPO_ROOT/agent/storageState.qa.json:/workspace/agent/storageState.qa.json:ro" \
+  "$IMAGE_NAME" "$@"

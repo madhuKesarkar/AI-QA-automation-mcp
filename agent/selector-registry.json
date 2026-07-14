@@ -1,0 +1,37 @@
+{
+  "billing.selectAnActionButton": {
+    "description": "Select an action button on the At a Glance billing page",
+    "role": "button",
+    "name": "Select an action",
+    "verifiedAgainst": "https://schools.qa.bwtest.net",
+    "verifiedAt": "2026-07-07"
+  },
+  "billing.bulkUploadRatesMenuItem": {
+    "description": "Bulk upload rates menu item in the Select an action dropdown",
+    "role": "menuitem",
+    "name": "Bulk upload rates",
+    "verifiedAgainst": "https://schools.qa.bwtest.net",
+    "verifiedAt": "2026-07-07"
+  },
+  "billing.bulkUploadWizard.chooseFileButton": {
+    "description": "Choose a file button on the Upload rate sheet step",
+    "role": "button",
+    "name": "Choose a file",
+    "verifiedAgainst": "https://schools.qa.bwtest.net",
+    "verifiedAt": "2026-07-07"
+  },
+  "billing.bulkUploadWizard.createRatesManuallyButton": {
+    "description": "Create rates manually button, alternative to file upload",
+    "role": "button",
+    "name": "Create rates manually",
+    "verifiedAgainst": "https://schools.qa.bwtest.net",
+    "verifiedAt": "2026-07-07"
+  },
+  "billing.bulkUploadWizard.cancelButton": {
+    "description": "Cancel button that closes the wizard dialog",
+    "role": "button",
+    "name": "Cancel",
+    "verifiedAgainst": "https://schools.qa.bwtest.net",
+    "verifiedAt": "2026-07-07"
+  }
+}

@@ -9,6 +9,15 @@ See the full process doc: `qa-automation-sop-linear-playwright-mcp.md`
 (kept alongside this repo, not inside it, since it's a living process
 reference rather than code).
 
+## Agent orchestrator
+
+The manual process above (Claude in Chrome, hand-reviewed selectors) is
+how this repo's coverage was actually built. `agent/` contains an
+autonomous version of the same pipeline — fetch a Linear ticket, draft
+Gherkin, run it, report back — with a human gate at plan approval and at
+first-time selector/session capture. See `agent/README.md` for the full
+design and honest limitations before relying on it.
+
 ## Structure
 
 ```
