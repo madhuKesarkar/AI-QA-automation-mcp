@@ -1,4 +1,4 @@
-import type { Ticket } from '../types.js';
+import type { Ticket, LinkedResource } from '../types.js';
 
 const LINEAR_API_URL = 'https://api.linear.app/graphql';
 
@@ -27,10 +27,9 @@ async function linearRequest<T>(apiKey: string, query: string, variables: Record
 }
 
 /** Fetches a ticket by its human-readable identifier, e.g. "FINOPS-456".
- * Acceptance criteria are parsed out of the description's checklist items
- * (Linear stores AC as markdown checkboxes in the description body) —
- * this is a heuristic, not a guarantee; the scenario writer stage treats
- * an empty result as a signal to flag needsHuman rather than proceed. */
+ * Acceptance criteria are parsed out of the description's checklist items.
+ * Linked resources (Google Docs, Figma, Slack) are extracted for the
+ * requirements-reviewer agent to fetch. */
 export async function fetchTicket(apiKey: string, identifier: string): Promise<Ticket> {
   const query = `
     query IssueByIdentifier($id: String!) {
@@ -62,6 +61,7 @@ export async function fetchTicket(apiKey: string, identifier: string): Promise<T
   }
 
   const acceptanceCriteria = extractAcceptanceCriteria(node.description ?? '');
+  const linkedResources = extractLinkedResources(node.description ?? '');
 
   return {
     id: node.id,
@@ -71,11 +71,11 @@ export async function fetchTicket(apiKey: string, identifier: string): Promise<T
     acceptanceCriteria,
     url: node.url,
     labels: node.labels.nodes.map((l) => l.name),
+    linkedResources,
   };
 }
 
 function extractAcceptanceCriteria(description: string): string[] {
-  // Matches markdown checklist lines: "- [ ] does the thing" / "- [x] ..."
   const lines = description.split('\n');
   return lines
     .filter((line) => /^\s*-\s*\[[ xX]\]/.test(line))
@@ -83,8 +83,29 @@ function extractAcceptanceCriteria(description: string): string[] {
     .filter(Boolean);
 }
 
-/** Posts a comment to a ticket. Used by the linearReporter stage — this
- * is the only stage allowed to write back to Linear. */
+/** Extracts Google Docs, Figma, and Slack URLs from the ticket description.
+ * The requirements-reviewer agent will attempt to fetch content from these. */
+function extractLinkedResources(description: string): LinkedResource[] {
+  const resources: LinkedResource[] = [];
+  const urlPattern = /https?:\/\/[^\s\)>\"]+/g;
+  const matches = description.match(urlPattern) ?? [];
+
+  for (const url of matches) {
+    if (url.includes('docs.google.com')) {
+      resources.push({ type: 'google-doc', url });
+    } else if (url.includes('figma.com')) {
+      resources.push({ type: 'figma', url });
+    } else if (url.includes('slack.com')) {
+      resources.push({ type: 'slack', url });
+    }
+  }
+
+  // Deduplicate by URL
+  return resources.filter((r, i, arr) => arr.findIndex((x) => x.url === r.url) === i);
+}
+
+/** Posts a comment to a ticket. Only the statusReporter agent is
+ * allowed to call this — all other agents write to disk only. */
 export async function postComment(apiKey: string, issueId: string, body: string): Promise<void> {
   const mutation = `
     mutation CommentCreate($issueId: String!, $body: String!) {
@@ -102,10 +123,7 @@ export async function postComment(apiKey: string, issueId: string, body: string)
   }
 }
 
-/** Adds a label to a ticket by name (label must already exist in the
- * workspace — see Epic 5's label-set ticket). Used to move tickets
- * through the qa:plan-pending -> qa:plan-approved -> qa:automated
- * state machine. */
+/** Adds a label to a ticket by name. Label must already exist in the workspace. */
 export async function addLabel(apiKey: string, issueId: string, labelName: string): Promise<void> {
   const findLabelQuery = `
     query LabelByName($name: String!) {
@@ -127,6 +145,35 @@ export async function addLabel(apiKey: string, issueId: string, labelName: strin
   const mutation = `
     mutation IssueAddLabel($issueId: String!, $labelId: String!) {
       issueAddLabel(id: $issueId, labelId: $labelId) {
+        success
+      }
+    }
+  `;
+  await linearRequest(apiKey, mutation, { issueId, labelId });
+}
+
+/** Removes a label from a ticket by name. Used by the webhook dispatcher
+ * to clear trigger labels once the pipeline has started, preventing
+ * re-triggering on the same event. */
+export async function removeLabel(apiKey: string, issueId: string, labelName: string): Promise<void> {
+  const findLabelQuery = `
+    query LabelByName($name: String!) {
+      issueLabels(filter: { name: { eq: $name } }, first: 1) {
+        nodes { id }
+      }
+    }
+  `;
+  const labelData = await linearRequest<{ issueLabels: { nodes: Array<{ id: string }> } }>(
+    apiKey,
+    findLabelQuery,
+    { name: labelName }
+  );
+  const labelId = labelData.issueLabels.nodes[0]?.id;
+  if (!labelId) return; // label doesn't exist — nothing to remove
+
+  const mutation = `
+    mutation IssueRemoveLabel($issueId: String!, $labelId: String!) {
+      issueRemoveLabel(id: $issueId, labelId: $labelId) {
         success
       }
     }

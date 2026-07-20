@@ -9,6 +9,14 @@ export interface AgentConfig {
   maxRounds: number;
   gitUserName: string;
   gitUserEmail: string;
+  // Optional — used by statusReporter; pipeline still runs without it
+  slackWebhookUrl?: string;
+  // Optional — used by requirementsReviewer to fetch Google Docs
+  googleDocsApiKey?: string;
+  // Optional — port for the webhook server command
+  webhookPort: number;
+  // Optional — secret for validating Linear webhook payloads
+  linearWebhookSecret?: string;
 }
 
 export class ConfigError extends Error {}
@@ -34,6 +42,10 @@ export function loadConfig(): AgentConfig {
     maxRounds: Number(process.env.MAX_ROUNDS ?? '3'),
     gitUserName: process.env.GIT_USER_NAME ?? 'bw-qa-loop-bot',
     gitUserEmail: process.env.GIT_USER_EMAIL ?? 'qa-bot@example.com',
+    slackWebhookUrl: process.env.SLACK_WEBHOOK_URL,
+    googleDocsApiKey: process.env.GOOGLE_DOCS_API_KEY,
+    webhookPort: Number(process.env.WEBHOOK_PORT ?? '3456'),
+    linearWebhookSecret: process.env.LINEAR_WEBHOOK_SECRET,
   };
 }
 
@@ -71,7 +83,7 @@ export function runDoctorChecks(): DoctorCheck[] {
     detail: envExists ? 'found ./.env' : 'not found — copy agent/.env.example to ./.env',
   });
 
-  // Required vars (only meaningful if .env is loaded already by the caller)
+  // Required vars
   const required = ['LINEAR_API_KEY', 'ANTHROPIC_API_KEY', 'SANDBOX_URL', 'QA_URL'];
   for (const key of required) {
     const present = Boolean(process.env[key]);
@@ -82,8 +94,22 @@ export function runDoctorChecks(): DoctorCheck[] {
     });
   }
 
-  // storageState files (session cookies captured once by a human login —
-  // see selectorAgent.ts for why this exists)
+  // Optional vars — warn but don't fail
+  const optional: Array<[string, string]> = [
+    ['SLACK_WEBHOOK_URL', 'Slack notifications will be skipped'],
+    ['GOOGLE_DOCS_API_KEY', 'Google Docs linked from tickets will not be fetched'],
+    ['LINEAR_WEBHOOK_SECRET', 'Webhook signature validation will be skipped (not recommended for production)'],
+  ];
+  for (const [key, note] of optional) {
+    const present = Boolean(process.env[key]);
+    checks.push({
+      name: `env: ${key} (optional)`,
+      ok: true, // optional — never fail doctor
+      detail: present ? 'set' : `not set — ${note}`,
+    });
+  }
+
+  // storageState files (session cookies captured once by a human login)
   for (const env of ['sandbox', 'qa']) {
     const path = `./agent/storageState.${env}.json`;
     const exists = existsSync(path);
