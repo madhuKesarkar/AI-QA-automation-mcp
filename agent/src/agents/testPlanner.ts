@@ -39,7 +39,7 @@ export async function runTestPlannerAgent(
 ): Promise<ScenarioPlan> {
   log('test-planner', `Planning tests for ${requirementsDoc.ticket}...`);
 
-  // Refuse to plan if there are unresolved uncertainties — key lesson from the article
+  // Refuse to plan if there are unresolved uncertainties
   if (requirementsDoc.uncertainSections.length > 0) {
     log(
       'test-planner',

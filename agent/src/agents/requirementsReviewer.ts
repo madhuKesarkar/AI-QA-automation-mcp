@@ -5,9 +5,9 @@ import { fetchGoogleDocContent } from '../lib/googleDocs.js';
 import { log } from '../lib/logger.js';
 import type { Ticket, RequirementsDoc } from '../types.js';
 
-/** Key lesson from the article: the agent must EXPLICITLY flag uncertain
- * or undecided sections rather than generating plausible-sounding specs.
- * False confidence here poisons everything downstream. */
+/** The agent must EXPLICITLY flag uncertain or undecided sections rather
+ * than generating plausible-sounding specs. False confidence here poisons
+ * everything downstream. */
 const SYSTEM_PROMPT = `You are a QA requirements reviewer. Your job is to consolidate
 requirement information from multiple sources (Linear ticket, linked documents, design
 specs) into a single, unambiguous requirements document for test planning.

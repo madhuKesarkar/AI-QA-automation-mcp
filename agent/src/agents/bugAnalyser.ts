@@ -6,9 +6,9 @@ import type { Verdict, BugReport, BugItem } from '../types.js';
 
 /** Runs parallel to the executor (see cli.ts).
  *
- * Key lesson from the article: running bug analysis simultaneously
- * accelerates feedback but requires careful classification to avoid
- * false positives from environment instability. This agent explicitly
+ * Running bug analysis simultaneously accelerates feedback but requires
+ * careful classification to avoid false positives from environment
+ * instability. This agent explicitly
  * classifies each failure as product-bug, env-flakiness, or test-issue —
  * only product-bugs get reported to the ticket owner. */
 const SYSTEM_PROMPT = `You are a QA bug analyser. You compare Playwright test failure

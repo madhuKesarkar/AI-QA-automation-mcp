@@ -388,7 +388,7 @@ function escapeHtml(s: string): string {
 function printHelp(): void {
   console.log(`bw-qa-loop — 5-agent QA pipeline: Linear → requirements → Gherkin → execution → bug analysis → report
 
-Pipelines (article model):
+Pipelines:
   "ready for QA" label     →  requirements-reviewer + test-planner (plan gate)
   "ready for QA execution" →  executor + bug-analyser (parallel) + status-reporter
 
