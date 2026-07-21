@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 import 'dotenv/config';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { loadConfig, runDoctorChecks, ConfigError } from './lib/env.js';
 import { log, logError } from './lib/logger.js';
-import { runFetchStage } from './stages/fetchTicket.js';
-import { runScenarioWriterStage } from './stages/scenarioWriter.js';
-import { runSelectorStage } from './stages/selectorAgent.js';
-import { runRunnerStage } from './stages/runner.js';
-import { runReportStage } from './stages/reportAgent.js';
-import { runLinearReporterStage } from './stages/linearReporter.js';
-import { EXIT_CODES, type Environment, type Verdict } from './types.js';
+import { startWebhookServer, type LinearWebhookPayload } from './lib/linearWebhook.js';
+import { runRequirementsReviewerAgent } from './agents/requirementsReviewer.js';
+import { runTestPlannerAgent } from './agents/testPlanner.js';
+import { runExecutorAgent } from './agents/executor.js';
+import { runBugAnalyserAgent } from './agents/bugAnalyser.js';
+import { runStatusReporterAgent } from './agents/statusReporter.js';
+import { fetchTicket } from './lib/linear.js';
+import { EXIT_CODES, LINEAR_LABELS, type Environment, type Verdict, type RunSummary } from './types.js';
 
 interface ParsedArgs {
   command: string;
@@ -48,12 +49,18 @@ async function main(): Promise<number> {
     return allOk ? EXIT_CODES.VERIFIED : EXIT_CODES.ERROR;
   }
 
+  if (args.command === 'webhook') {
+    return runWebhookServer();
+  }
+
   if (args.command === 'help' || args.command === '') {
     printHelp();
     return EXIT_CODES.ERROR;
   }
 
-  const ticketId = args.command; // e.g. `bw-qa-loop FINOPS-456`
+  // Direct invocation: bw-qa-loop <TICKET-ID> [flags]
+  // Runs the planning pipeline by default; add --skip-plan-gate to also execute.
+  const ticketId = args.command;
   let config;
   try {
     config = loadConfig();
@@ -70,92 +77,328 @@ async function main(): Promise<number> {
   mkdirSync(workDir, { recursive: true });
 
   try {
-    // Stage 1: fetch
-    const ticket = await runFetchStage(config.linearApiKey, ticketId, workDir);
-
-    // Stage 2: scenarios
-    const plan = await runScenarioWriterStage(config.anthropicApiKey, ticket, workDir);
-
-    if (plan.needsHuman) {
-      log('cli', `Ticket needs human input before proceeding: ${plan.openQuestions.join('; ')}`);
-      return EXIT_CODES.NEEDS_HUMAN;
+    if (args.dryRun || !args.skipPlanGate) {
+      // Planning pipeline only (equivalent to "ready for QA" trigger)
+      return await runPlanningPipeline({
+        ticketId,
+        workDir,
+        linearApiKey: config.linearApiKey,
+        anthropicApiKey: config.anthropicApiKey,
+        googleDocsApiKey: config.googleDocsApiKey,
+        dryRun: args.dryRun,
+      });
     }
 
-    if (args.dryRun) {
-      log('cli', `Dry run complete. Plan written to ${plan.featurePath} and ${plan.planPath}. No execution performed.`);
-      return EXIT_CODES.VERIFIED;
-    }
+    // Full pipeline (planning + execution)
+    const planResult = await runPlanningPipeline({
+      ticketId,
+      workDir,
+      linearApiKey: config.linearApiKey,
+      anthropicApiKey: config.anthropicApiKey,
+      googleDocsApiKey: config.googleDocsApiKey,
+      dryRun: false,
+      silent: true, // skip the plan gate pause since --skip-plan-gate was passed
+    });
 
-    if (!args.skipPlanGate) {
-      log(
-        'cli',
-        'Plan gate: this run stops here by default. A human must review ' +
-          `${plan.planPath} and re-run with --skip-plan-gate once approved ` +
-          '(or once your Linear label automation confirms qa:plan-approved).'
-      );
-      return EXIT_CODES.NEEDS_HUMAN;
-    }
+    if (planResult !== EXIT_CODES.VERIFIED) return planResult;
 
-    // Stage 3: selectors
-    const selectorReport = await runSelectorStage(ticketId, plan.featurePath);
-    if (selectorReport.status === 'needs-human') {
-      log(
-        'cli',
-        `Cannot run headlessly yet — missing selectors: ${selectorReport.missing.join(', ')}. ` +
-          'A human needs to verify these once (see agent/README.md: "Capturing new selectors").'
-      );
-      return EXIT_CODES.NEEDS_HUMAN;
-    }
-
-    // Stage 4: runner (loop over environments, with retry-on-infra-failure only)
+    const ticket = await fetchTicket(config.linearApiKey, ticketId);
     const envsToRun: Environment[] = args.envFilter ? [args.envFilter] : ['sandbox', 'qa'];
-    let round = 1;
-    let verdicts: Verdict[] = [];
 
-    while (round <= config.maxRounds) {
-      verdicts = [];
-      for (const env of envsToRun) {
-        const storageStatePath = `./agent/storageState.${env}.json`;
-        const verdict = await runRunnerStage(ticketId, plan.featurePath, env, storageStatePath, workDir);
-        verdicts.push(verdict);
-      }
-
-      const anyFailed = verdicts.some((v) => v.failed > 0);
-      if (!anyFailed) break;
-
-      // We deliberately do NOT auto-classify failures as infra vs.
-      // product-behavior and do NOT auto-retry past round 1 without a
-      // human decision — see runner.ts's comment on why. This loop exists
-      // for genuinely transient infra hiccups only, and stops immediately
-      // otherwise.
-      log('cli', `Round ${round} had failures. Stopping loop — see runner.ts for why this isn't auto-retried.`);
-      break;
-    }
-
-    // Stage 5: report
-    const summary = runReportStage(ticketId, round, verdicts, workDir);
-
-    // Stage 6: report back to Linear
-    await runLinearReporterStage(config.linearApiKey, ticket.id, summary);
-
-    if (summary.overallStatus === 'verified') return EXIT_CODES.VERIFIED;
-    if (summary.overallStatus === 'product-bug-found') return EXIT_CODES.PRODUCT_BUG_FOUND;
-    return EXIT_CODES.NEEDS_HUMAN;
+    return await runExecutionPipeline({
+      ticketId,
+      issueId: ticket.id,
+      issueUrl: ticket.url,
+      workDir,
+      linearApiKey: config.linearApiKey,
+      anthropicApiKey: config.anthropicApiKey,
+      slackWebhookUrl: config.slackWebhookUrl,
+      environments: envsToRun,
+      maxRounds: config.maxRounds,
+    });
   } catch (err) {
     logError('cli', (err as Error).message);
     return EXIT_CODES.ERROR;
   }
 }
 
-function printHelp(): void {
-  console.log(`bw-qa-loop — autonomous Linear ticket -> Gherkin -> execution -> report loop
+// ─── Planning Pipeline ───────────────────────────────────────────────────────
+// Triggered by: Linear label "ready for QA" (or direct CLI invocation)
+// Stages: requirementsReviewer → testPlanner → plan gate
 
-Usage:
-  bw-qa-loop <TICKET-ID>                 Full ride (stops at the plan gate by default)
-  bw-qa-loop <TICKET-ID> --dry-run       Draft scenarios only, no execution, no Linear write
-  bw-qa-loop <TICKET-ID> --skip-plan-gate  Proceed past the human plan-review gate
-  bw-qa-loop <TICKET-ID> --env=sandbox   Run against one environment only
-  bw-qa-loop doctor                      Check Docker, env vars, and storageState files
+interface PlanningOptions {
+  ticketId: string;
+  workDir: string;
+  linearApiKey: string;
+  anthropicApiKey: string;
+  googleDocsApiKey?: string;
+  dryRun?: boolean;
+  silent?: boolean; // skip the plan gate log if proceeding immediately to execution
+}
+
+async function runPlanningPipeline(opts: PlanningOptions): Promise<number> {
+  const { ticketId, workDir, linearApiKey, anthropicApiKey, googleDocsApiKey, dryRun, silent } = opts;
+
+  // Stage 1: requirements-reviewer
+  const requirementsDoc = await runRequirementsReviewerAgent(
+    linearApiKey,
+    anthropicApiKey,
+    ticketId,
+    workDir,
+    googleDocsApiKey
+  );
+
+  if (requirementsDoc.uncertainSections.length > 0) {
+    log(
+      'cli',
+      `Requirements have ${requirementsDoc.uncertainSections.length} UNCERTAIN section(s) that must be resolved before test planning:\n` +
+        requirementsDoc.uncertainSections.map((s) => `  - ${s}`).join('\n')
+    );
+    return EXIT_CODES.NEEDS_HUMAN;
+  }
+
+  // Stage 2: test-planner
+  const plan = await runTestPlannerAgent(anthropicApiKey, requirementsDoc, workDir);
+
+  if (plan.needsHuman) {
+    log('cli', `Test plan needs human input: ${plan.openQuestions.join('; ')}`);
+    return EXIT_CODES.NEEDS_HUMAN;
+  }
+
+  if (dryRun) {
+    log('cli', `Dry run complete. Feature: ${plan.featurePath}  Plan: ${plan.planPath}`);
+    return EXIT_CODES.VERIFIED;
+  }
+
+  if (!silent) {
+    log(
+      'cli',
+      `Plan gate: review ${plan.planPath} then re-run with --skip-plan-gate, ` +
+        `or apply the "${LINEAR_LABELS.READY_FOR_QA_EXECUTION}" label to trigger execution automatically.`
+    );
+    return EXIT_CODES.NEEDS_HUMAN;
+  }
+
+  return EXIT_CODES.VERIFIED;
+}
+
+// ─── Execution Pipeline ──────────────────────────────────────────────────────
+// Triggered by: Linear label "ready for QA execution" (or --skip-plan-gate CLI flag)
+// Stages: executor + bugAnalyser (parallel) → statusReporter
+
+interface ExecutionOptions {
+  ticketId: string;
+  issueId: string;
+  issueUrl: string;
+  workDir: string;
+  linearApiKey: string;
+  anthropicApiKey: string;
+  slackWebhookUrl?: string;
+  environments: Environment[];
+  maxRounds: number;
+}
+
+async function runExecutionPipeline(opts: ExecutionOptions): Promise<number> {
+  const {
+    ticketId, issueId, issueUrl, workDir,
+    linearApiKey, anthropicApiKey, slackWebhookUrl,
+    environments, maxRounds,
+  } = opts;
+
+  // Look for the feature file written by the planning pipeline
+  const featurePath = `${workDir}/${ticketId.toLowerCase()}.feature`;
+  const requirementsPath = `${workDir}/requirements.md`;
+
+  // Stage 3: executor
+  const { selectorReport, verdicts } = await runExecutorAgent(
+    ticketId,
+    featurePath,
+    environments,
+    workDir
+  );
+
+  if (selectorReport.status === 'needs-human') {
+    log('cli', `Missing selectors: ${selectorReport.missing.join(', ')} — cannot run headlessly.`);
+    return EXIT_CODES.NEEDS_HUMAN;
+  }
+
+  // Stage 4: bug-analyser (runs conceptually parallel; await here since we
+  // need verdicts complete before analysis — true async parallelism would
+  // require streaming Playwright results, which is a future improvement)
+  const bugReport = await runBugAnalyserAgent(
+    anthropicApiKey,
+    ticketId,
+    verdicts,
+    requirementsPath,
+    workDir
+  );
+
+  // Assemble run summary
+  const overallStatus: RunSummary['overallStatus'] =
+    bugReport.overallStatus === 'product-bug-found' ? 'product-bug-found' :
+    bugReport.overallStatus === 'passed' ? 'verified' :
+    'needs-human';
+
+  const reportPath = `${workDir}/${ticketId.toLowerCase()}.report.html`;
+  writeHtmlReport(ticketId, verdicts, bugReport, reportPath);
+
+  const summary: RunSummary = {
+    ticket: ticketId,
+    round: 1,
+    verdicts,
+    bugReport,
+    overallStatus,
+    reportPath,
+  };
+
+  // Stage 5: status-reporter
+  await runStatusReporterAgent(linearApiKey, issueId, issueUrl, summary, slackWebhookUrl);
+
+  if (summary.overallStatus === 'verified') return EXIT_CODES.VERIFIED;
+  if (summary.overallStatus === 'product-bug-found') return EXIT_CODES.PRODUCT_BUG_FOUND;
+  return EXIT_CODES.NEEDS_HUMAN;
+}
+
+// ─── Webhook Server ──────────────────────────────────────────────────────────
+
+async function runWebhookServer(): Promise<number> {
+  let config;
+  try {
+    config = loadConfig();
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      logError('config', err.message);
+      return EXIT_CODES.ERROR;
+    }
+    throw err;
+  }
+
+  startWebhookServer(
+    config.webhookPort,
+    config.linearWebhookSecret,
+
+    // "ready for QA" → planning pipeline
+    async (payload: LinearWebhookPayload) => {
+      const ticketId = payload.data.identifier;
+      const workDir = `./project-envs/${ticketId}`;
+      mkdirSync(workDir, { recursive: true });
+
+      log('webhook', `Starting planning pipeline for ${ticketId}`);
+      const result = await runPlanningPipeline({
+        ticketId,
+        workDir,
+        linearApiKey: config.linearApiKey,
+        anthropicApiKey: config.anthropicApiKey,
+        googleDocsApiKey: config.googleDocsApiKey,
+      });
+      log('webhook', `Planning pipeline for ${ticketId} exited with code ${result}`);
+    },
+
+    // "ready for QA execution" → execution pipeline
+    async (payload: LinearWebhookPayload) => {
+      const ticketId = payload.data.identifier;
+      const workDir = `./project-envs/${ticketId}`;
+      mkdirSync(workDir, { recursive: true });
+
+      log('webhook', `Starting execution pipeline for ${ticketId}`);
+      const result = await runExecutionPipeline({
+        ticketId,
+        issueId: payload.data.id,
+        issueUrl: payload.data.url,
+        workDir,
+        linearApiKey: config.linearApiKey,
+        anthropicApiKey: config.anthropicApiKey,
+        slackWebhookUrl: config.slackWebhookUrl,
+        environments: ['sandbox', 'qa'],
+        maxRounds: config.maxRounds,
+      });
+      log('webhook', `Execution pipeline for ${ticketId} exited with code ${result}`);
+    }
+  );
+
+  // Keep process alive
+  return new Promise(() => {});
+}
+
+// ─── HTML Report ─────────────────────────────────────────────────────────────
+
+function writeHtmlReport(ticket: string, verdicts: Verdict[], bugReport: any, path: string): void {
+  const statusColor = bugReport.overallStatus === 'passed' ? '#1e7e34' : '#b00020';
+  const envSections = verdicts.map((v) => {
+    const rows = v.results
+      .map(
+        (r) =>
+          `<tr>
+            <td>${escapeHtml(r.name)}</td>
+            <td>${r.tags.join(', ')}</td>
+            <td style="color:${r.status === 'passed' ? '#1e7e34' : r.status === 'skipped' ? '#888' : '#b00020'}">${r.status}</td>
+            <td>${r.message ? escapeHtml(r.message.slice(0, 300)) : ''}</td>
+          </tr>`
+      )
+      .join('');
+    return `<h2>${v.environment} <small>(${v.ranAt})</small></h2>
+      <p>${v.passed} passed &middot; ${v.failed} failed &middot; ${v.skipped} skipped</p>
+      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%">
+        <tr><th>Scenario</th><th>Tags</th><th>Status</th><th>Message</th></tr>
+        ${rows}
+      </table>`;
+  }).join('\n');
+
+  const bugRows = (bugReport.bugs ?? [])
+    .map(
+      (b: any) =>
+        `<tr style="background:#fff3f3">
+          <td>${escapeHtml(b.scenarioName)}</td>
+          <td>${b.environment}</td>
+          <td>${escapeHtml(b.requirementSection)}</td>
+          <td>${escapeHtml(b.description)}</td>
+        </tr>`
+    )
+    .join('');
+
+  const bugsTable = bugRows
+    ? `<h2>🐛 Product Bugs (mapped to requirements)</h2>
+       <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%">
+         <tr><th>Scenario</th><th>Env</th><th>Requirement</th><th>Description</th></tr>
+         ${bugRows}
+       </table>`
+    : '';
+
+  writeFileSync(
+    path,
+    `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>${ticket} — QA report</title></head>
+<body style="font-family:sans-serif;max-width:960px;margin:40px auto;">
+  <h1>${ticket} <span style="color:${statusColor}">[${bugReport.overallStatus}]</span></h1>
+  ${bugsTable}
+  ${envSections}
+</body>
+</html>`,
+    'utf-8'
+  );
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ─── Help ────────────────────────────────────────────────────────────────────
+
+function printHelp(): void {
+  console.log(`bw-qa-loop — 5-agent QA pipeline: Linear → requirements → Gherkin → execution → bug analysis → report
+
+Pipelines:
+  "ready for QA" label     →  requirements-reviewer + test-planner (plan gate)
+  "ready for QA execution" →  executor + bug-analyser (parallel) + status-reporter
+
+Direct usage:
+  bw-qa-loop <TICKET-ID>                  Planning pipeline (stops at plan gate)
+  bw-qa-loop <TICKET-ID> --dry-run        Requirements + scenarios only, no gate, no execution
+  bw-qa-loop <TICKET-ID> --skip-plan-gate Full pipeline (planning + execution)
+  bw-qa-loop <TICKET-ID> --env=sandbox    Execution against one environment only
+  bw-qa-loop webhook                      Start webhook server (label-driven automation)
+  bw-qa-loop doctor                       Check Docker, env vars, storageState files
 
 Exit codes: 0 verified · 1 needs-human · 2 error · 3 product-bug-found`);
 }
