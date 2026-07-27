@@ -1,22 +1,18 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 
-/** Thin wrapper — deliberately not doing anything clever here. The
- * orchestrator (cli.ts) is the deterministic part; this is the one place
- * a stage calls out to a model, and it does exactly one thing: send a
- * prompt, get text back. All the actual judgment (does this need a
- * human? what does "verified" mean?) lives in the calling stage's code,
- * not buried in a prompt. */
-export async function callClaude(apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> {
-  const client = new Anthropic({ apiKey });
+export async function callClaude(systemPrompt: string, userPrompt: string): Promise<string> {
+  const client = new AnthropicBedrock({
+    awsRegion: process.env.AWS_REGION,
+  });
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: 'arn:aws:bedrock:us-east-1:563410114716:application-inference-profile/319ktwmxzths',
     max_tokens: 4096,
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
   });
 
-  const textBlocks = response.content.filter(
-    (block): block is Anthropic.TextBlock => block.type === 'text'
-  );
-  return textBlocks.map((b) => b.text).join('\n');
+  return response.content
+    .filter((block) => block.type === 'text')
+    .map((block) => ('text' in block ? block.text : ''))
+    .join('\n');
 }

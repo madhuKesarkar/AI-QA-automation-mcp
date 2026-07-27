@@ -40,7 +40,6 @@ TEST_ISSUES:
 (one per line, pipe-separated, or "none")`;
 
 export async function runBugAnalyserAgent(
-  anthropicApiKey: string,
   ticket: string,
   verdicts: Verdict[],
   requirementsPath: string,
@@ -79,7 +78,7 @@ export async function runBugAnalyserAgent(
     : '(requirements document not found — classify based on failure evidence only)';
 
   const userPrompt = buildUserPrompt(ticket, failedResults, verdicts, requirementsContent);
-  const response = await callClaude(anthropicApiKey, SYSTEM_PROMPT, userPrompt);
+  const response = await callClaude(SYSTEM_PROMPT, userPrompt);
 
   const bugs = parseItems(response, 'BUGS', verdicts, 'product-bug');
   const envIssues = parseItems(response, 'ENV_ISSUES', verdicts, 'env-flakiness');
