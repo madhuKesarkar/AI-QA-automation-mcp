@@ -31,7 +31,6 @@ SOURCES_USED:
 
 export async function runRequirementsReviewerAgent(
   linearApiKey: string,
-  anthropicApiKey: string,
   identifier: string,
   workDir: string,
   googleDocsApiKey?: string
@@ -52,7 +51,7 @@ export async function runRequirementsReviewerAgent(
 
   // Step 3: Consolidate via Claude
   const userPrompt = buildUserPrompt(ticket, fetchedResources);
-  const response = await callClaude(anthropicApiKey, SYSTEM_PROMPT, userPrompt);
+  const response = await callClaude(SYSTEM_PROMPT, userPrompt);
 
   // Step 4: Parse response
   const requirementsMatch = response.match(/REQUIREMENTS:\s*([\s\S]*?)\s*UNCERTAIN:/);

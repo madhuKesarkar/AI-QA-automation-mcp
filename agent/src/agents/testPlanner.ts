@@ -33,7 +33,6 @@ OPEN_QUESTIONS:
 <bullet list of UNCERTAIN items skipped, or "none">`;
 
 export async function runTestPlannerAgent(
-  anthropicApiKey: string,
   requirementsDoc: RequirementsDoc,
   workDir: string
 ): Promise<ScenarioPlan> {
@@ -71,7 +70,7 @@ ${requirementsContent}
 Known selectors available for reuse:
 ${knownSelectors || '(none registered yet)'}`;
 
-  const response = await callClaude(anthropicApiKey, SYSTEM_PROMPT, userPrompt);
+  const response = await callClaude(SYSTEM_PROMPT, userPrompt);
 
   const featureMatch = response.match(/FEATURE:\s*([\s\S]*?)\s*TEST_PLAN:/);
   const planMatch = response.match(/TEST_PLAN:\s*([\s\S]*?)\s*OPEN_QUESTIONS:/);

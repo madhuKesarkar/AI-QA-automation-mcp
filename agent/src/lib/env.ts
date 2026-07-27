@@ -3,7 +3,7 @@ import { execSync } from 'node:child_process';
 
 export interface AgentConfig {
   linearApiKey: string;
-  anthropicApiKey: string;
+  awsRegion: string;
   sandboxUrl: string;
   qaUrl: string;
   maxRounds: number;
@@ -25,7 +25,7 @@ export class ConfigError extends Error {}
  * specific, actionable message rather than a generic "undefined" crash —
  * this is what `doctor` surfaces to the user. */
 export function loadConfig(): AgentConfig {
-  const required = ['LINEAR_API_KEY', 'ANTHROPIC_API_KEY', 'SANDBOX_URL', 'QA_URL'];
+  const required = ['LINEAR_API_KEY', 'AWS_REGION', 'SANDBOX_URL', 'QA_URL'];
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length > 0) {
     throw new ConfigError(
@@ -36,7 +36,7 @@ export function loadConfig(): AgentConfig {
 
   return {
     linearApiKey: process.env.LINEAR_API_KEY!,
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY!,
+    awsRegion: process.env.AWS_REGION!,
     sandboxUrl: process.env.SANDBOX_URL!,
     qaUrl: process.env.QA_URL!,
     maxRounds: Number(process.env.MAX_ROUNDS ?? '3'),
@@ -84,7 +84,7 @@ export function runDoctorChecks(): DoctorCheck[] {
   });
 
   // Required vars
-  const required = ['LINEAR_API_KEY', 'ANTHROPIC_API_KEY', 'SANDBOX_URL', 'QA_URL'];
+  const required = ['LINEAR_API_KEY', 'AWS_REGION', 'SANDBOX_URL', 'QA_URL'];
   for (const key of required) {
     const present = Boolean(process.env[key]);
     checks.push({

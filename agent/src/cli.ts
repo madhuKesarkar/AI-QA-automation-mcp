@@ -83,7 +83,6 @@ async function main(): Promise<number> {
         ticketId,
         workDir,
         linearApiKey: config.linearApiKey,
-        anthropicApiKey: config.anthropicApiKey,
         googleDocsApiKey: config.googleDocsApiKey,
         dryRun: args.dryRun,
       });
@@ -94,7 +93,6 @@ async function main(): Promise<number> {
       ticketId,
       workDir,
       linearApiKey: config.linearApiKey,
-      anthropicApiKey: config.anthropicApiKey,
       googleDocsApiKey: config.googleDocsApiKey,
       dryRun: false,
       silent: true, // skip the plan gate pause since --skip-plan-gate was passed
@@ -111,7 +109,6 @@ async function main(): Promise<number> {
       issueUrl: ticket.url,
       workDir,
       linearApiKey: config.linearApiKey,
-      anthropicApiKey: config.anthropicApiKey,
       slackWebhookUrl: config.slackWebhookUrl,
       environments: envsToRun,
       maxRounds: config.maxRounds,
@@ -130,19 +127,17 @@ interface PlanningOptions {
   ticketId: string;
   workDir: string;
   linearApiKey: string;
-  anthropicApiKey: string;
   googleDocsApiKey?: string;
   dryRun?: boolean;
   silent?: boolean; // skip the plan gate log if proceeding immediately to execution
 }
 
 async function runPlanningPipeline(opts: PlanningOptions): Promise<number> {
-  const { ticketId, workDir, linearApiKey, anthropicApiKey, googleDocsApiKey, dryRun, silent } = opts;
+  const { ticketId, workDir, linearApiKey, googleDocsApiKey, dryRun, silent } = opts;
 
   // Stage 1: requirements-reviewer
   const requirementsDoc = await runRequirementsReviewerAgent(
     linearApiKey,
-    anthropicApiKey,
     ticketId,
     workDir,
     googleDocsApiKey
@@ -158,7 +153,7 @@ async function runPlanningPipeline(opts: PlanningOptions): Promise<number> {
   }
 
   // Stage 2: test-planner
-  const plan = await runTestPlannerAgent(anthropicApiKey, requirementsDoc, workDir);
+  const plan = await runTestPlannerAgent(requirementsDoc, workDir);
 
   if (plan.needsHuman) {
     log('cli', `Test plan needs human input: ${plan.openQuestions.join('; ')}`);
@@ -192,7 +187,6 @@ interface ExecutionOptions {
   issueUrl: string;
   workDir: string;
   linearApiKey: string;
-  anthropicApiKey: string;
   slackWebhookUrl?: string;
   environments: Environment[];
   maxRounds: number;
@@ -201,7 +195,7 @@ interface ExecutionOptions {
 async function runExecutionPipeline(opts: ExecutionOptions): Promise<number> {
   const {
     ticketId, issueId, issueUrl, workDir,
-    linearApiKey, anthropicApiKey, slackWebhookUrl,
+    linearApiKey, slackWebhookUrl,
     environments, maxRounds,
   } = opts;
 
@@ -226,7 +220,6 @@ async function runExecutionPipeline(opts: ExecutionOptions): Promise<number> {
   // need verdicts complete before analysis — true async parallelism would
   // require streaming Playwright results, which is a future improvement)
   const bugReport = await runBugAnalyserAgent(
-    anthropicApiKey,
     ticketId,
     verdicts,
     requirementsPath,
@@ -288,7 +281,6 @@ async function runWebhookServer(): Promise<number> {
         ticketId,
         workDir,
         linearApiKey: config.linearApiKey,
-        anthropicApiKey: config.anthropicApiKey,
         googleDocsApiKey: config.googleDocsApiKey,
       });
       log('webhook', `Planning pipeline for ${ticketId} exited with code ${result}`);
@@ -307,7 +299,6 @@ async function runWebhookServer(): Promise<number> {
         issueUrl: payload.data.url,
         workDir,
         linearApiKey: config.linearApiKey,
-        anthropicApiKey: config.anthropicApiKey,
         slackWebhookUrl: config.slackWebhookUrl,
         environments: ['sandbox', 'qa'],
         maxRounds: config.maxRounds,

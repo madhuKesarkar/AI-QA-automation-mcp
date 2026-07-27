@@ -20,5 +20,8 @@
     "dotenv": "^17.4.2",
     "playwright-bdd": "^9.2.0",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.32.0"
   }
 }
