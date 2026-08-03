@@ -4,10 +4,9 @@ import { loadRegistry } from '../lib/selectorRegistry.js';
 import { log } from '../lib/logger.js';
 import type { RequirementsDoc, ScenarioPlan } from '../types.js';
 
-/** Reads from requirements.md — not directly from the ticket.
- * This is the key architectural difference from the old scenarioWriter:
- * the test planner only sees the consolidated, uncertainty-flagged doc,
- * never the raw ticket noise. */
+/** Reads from requirements.md — not directly from the ticket. By design
+ * the test planner only sees the consolidated, uncertainty-flagged doc
+ * produced by the requirements-reviewer, never the raw ticket noise. */
 const SYSTEM_PROMPT = `You are a QA test planner. You write Gherkin scenarios and
 test plans from a consolidated requirements document produced by the
 requirements-reviewer agent.

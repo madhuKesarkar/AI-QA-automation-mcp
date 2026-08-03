@@ -16,7 +16,7 @@ export interface Ticket {
 /** A resource referenced in the ticket description that the
  * requirements-reviewer agent will attempt to fetch and consolidate. */
 export interface LinkedResource {
-  type: 'google-doc' | 'figma' | 'slack' | 'url';
+  type: 'google-doc' | 'figma' | 'slack' | 'linear-doc' | 'orchard-prototype' | 'url';
   url: string;
   content?: string; // populated after fetch; undefined means inaccessible
 }
@@ -66,9 +66,6 @@ export interface ScenarioResult {
   name: string;
   tags: string[];
   status: 'passed' | 'failed' | 'skipped';
-  // Distinguishes "the test broke" from "the product broke" — this is the
-  // distinction that determines whether the loop retries or stops and reports.
-  failureType?: 'infra' | 'product-behavior';
   message?: string;
   screenshotPath?: string;
   tracePath?: string;
@@ -108,7 +105,6 @@ export interface BugReport {
 
 export interface RunSummary {
   ticket: string;
-  round: number;
   verdicts: Verdict[];
   bugReport?: BugReport;
   overallStatus: 'verified' | 'needs-human' | 'error' | 'product-bug-found';

@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { callClaude } from '../lib/anthropic.js';
-import { fetchTicket } from '../lib/linear.js';
+import { fetchTicket, fetchLinearDocumentContent } from '../lib/linear.js';
 import { fetchGoogleDocContent } from '../lib/googleDocs.js';
 import { log } from '../lib/logger.js';
 import type { Ticket, RequirementsDoc } from '../types.js';
@@ -45,7 +45,7 @@ export async function runRequirementsReviewerAgent(
   log('requirements-reviewer', `Fetched ticket: "${ticket.title}" — ${ticket.linkedResources.length} linked resource(s)`);
 
   // Step 2: Fetch linked resources
-  const fetchedResources = await fetchLinkedResources(ticket, googleDocsApiKey);
+  const fetchedResources = await fetchLinkedResources(ticket, linearApiKey, googleDocsApiKey);
   const accessibleCount = fetchedResources.filter((r) => r.content).length;
   log('requirements-reviewer', `Fetched ${accessibleCount}/${fetchedResources.length} linked resource(s)`);
 
@@ -99,20 +99,47 @@ export async function runRequirementsReviewerAgent(
   };
 }
 
-async function fetchLinkedResources(ticket: Ticket, googleDocsApiKey?: string): Promise<Ticket['linkedResources']> {
+// async function fetchLinkedResources(ticket: Ticket, googleDocsApiKey?: string): Promise<Ticket['linkedResources']> {
+//   const results = await Promise.allSettled(
+//     ticket.linkedResources.map(async (resource) => {
+//       let content: string | null = null;
+
+//       if (resource.type === 'google-doc') {
+//         content = await fetchGoogleDocContent(resource.url, googleDocsApiKey);
+//       }
+//       // Figma and Slack require auth flows beyond this version's scope —
+//       // mark them as inaccessible so the agent explicitly flags the gap.
+
+//       return { ...resource, content: content ?? undefined };
+//     })
+
+async function fetchLinkedResources(
+  ticket: Ticket,
+  linearApiKey: string,
+  googleDocsApiKey?: string
+): Promise<Ticket['linkedResources']> {
   const results = await Promise.allSettled(
     ticket.linkedResources.map(async (resource) => {
       let content: string | null = null;
 
       if (resource.type === 'google-doc') {
         content = await fetchGoogleDocContent(resource.url, googleDocsApiKey);
+      } else if (resource.type === 'linear-doc') {
+        content = await fetchLinearDocumentContent(linearApiKey, resource.url);
       }
-      // Figma and Slack require auth flows beyond this version's scope —
-      // mark them as inaccessible so the agent explicitly flags the gap.
+      // Figma, Slack, and Orchard prototypes require auth/tooling flows
+      // beyond this version's scope — mark them as inaccessible so the
+      // agent explicitly flags the gap.
 
       return { ...resource, content: content ?? undefined };
     })
   );
+
+  return results.map((result, i) => {
+    if (result.status === 'fulfilled') return result.value;
+    log('requirements-reviewer', `Could not fetch ${ticket.linkedResources[i].url}: ${(result.reason as Error).message}`);
+    return ticket.linkedResources[i]; // content stays undefined
+  });
 
   return results.map((result, i) => {
     if (result.status === 'fulfilled') return result.value;
@@ -125,7 +152,7 @@ function buildUserPrompt(ticket: Ticket, resources: Ticket['linkedResources']): 
   const resourceSections = resources
     .map((r) => {
       if (r.content) {
-        return `--- Source: ${r.url} ---\n${r.content.slice(0, 4000)}\n--- End ---`;
+        return `--- Source: ${r.url} ---\n${r.content}\n--- End ---`;
       }
       return `--- Source: ${r.url} (INACCESSIBLE — ${r.type} requires auth or public sharing) ---`;
     })

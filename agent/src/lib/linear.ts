@@ -28,12 +28,12 @@ async function linearRequest<T>(apiKey: string, query: string, variables: Record
 
 /** Fetches a ticket by its human-readable identifier, e.g. "FINOPS-456".
  * Acceptance criteria are parsed out of the description's checklist items.
- * Linked resources (Google Docs, Figma, Slack) are extracted for the
- * requirements-reviewer agent to fetch. */
+ * Linked resources (Google Docs, Figma, Slack, Linear docs, Orchard
+ * prototypes) are extracted for the requirements-reviewer agent to fetch. */
 export async function fetchTicket(apiKey: string, identifier: string): Promise<Ticket> {
   const query = `
-    query IssueByIdentifier($id: String!) {
-      issues(filter: { number: { eq: $id } }, first: 1) {
+    query IssueByIdentifier($id: Float!) {
+      issues(filter: { number: { eq: $id } }, first: 20) {
         nodes {
           id
           identifier
@@ -83,8 +83,11 @@ function extractAcceptanceCriteria(description: string): string[] {
     .filter(Boolean);
 }
 
-/** Extracts Google Docs, Figma, and Slack URLs from the ticket description.
- * The requirements-reviewer agent will attempt to fetch content from these. */
+/** Extracts Google Docs, Figma, Slack, Linear document, and Orchard
+ * prototype URLs from the ticket description. The requirements-reviewer
+ * agent will attempt to fetch content from these (Linear docs and Google
+ * Docs are fetchable; Figma, Slack, and Orchard prototypes are flagged
+ * as inaccessible pending future work). */
 function extractLinkedResources(description: string): LinkedResource[] {
   const resources: LinkedResource[] = [];
   const urlPattern = /https?:\/\/[^\s\)>\"]+/g;
@@ -97,11 +100,48 @@ function extractLinkedResources(description: string): LinkedResource[] {
       resources.push({ type: 'figma', url });
     } else if (url.includes('slack.com')) {
       resources.push({ type: 'slack', url });
+    } else if (url.includes('linear.app/') && url.includes('/document/')) {
+      resources.push({ type: 'linear-doc', url });
+    } else if (url.includes('orchard.brightwheelhq.com')) {
+      resources.push({ type: 'orchard-prototype', url });
     }
   }
 
   // Deduplicate by URL
   return resources.filter((r, i, arr) => arr.findIndex((x) => x.url === r.url) === i);
+}
+
+/** Fetches the content of a Linear document (not an issue) by its URL,
+ * e.g. https://linear.app/brightwheel/document/<slug>-<id>. Linear
+ * document URLs end with a slug followed by a UUID-like ID segment;
+ * we extract that trailing ID segment and query the `document` field. */
+export async function fetchLinearDocumentContent(apiKey: string, url: string): Promise<string> {
+  const idMatch = url.match(/-([a-f0-9]{12,})(?:[/?#]|$)/i);
+  if (!idMatch) {
+    throw new Error(`Could not parse a document ID from Linear document URL: ${url}`);
+  }
+  const docId = idMatch[1];
+
+  const query = `
+    query DocumentById($id: String!) {
+      document(id: $id) {
+        title
+        content
+      }
+    }
+  `;
+
+  const data = await linearRequest<{ document: { title: string; content: string } | null }>(
+    apiKey,
+    query,
+    { id: docId }
+  );
+
+  if (!data.document) {
+    throw new Error(`Linear document not found or not accessible: ${url}`);
+  }
+
+  return `# ${data.document.title}\n\n${data.document.content}`;
 }
 
 /** Posts a comment to a ticket. Only the statusReporter agent is
@@ -127,7 +167,7 @@ export async function postComment(apiKey: string, issueId: string, body: string)
 export async function addLabel(apiKey: string, issueId: string, labelName: string): Promise<void> {
   const findLabelQuery = `
     query LabelByName($name: String!) {
-      issueLabels(filter: { name: { eq: $name } }, first: 1) {
+      issueLabels(filter: { name: { eq: $name } }, first: 20) {
         nodes { id }
       }
     }
@@ -158,7 +198,7 @@ export async function addLabel(apiKey: string, issueId: string, labelName: strin
 export async function removeLabel(apiKey: string, issueId: string, labelName: string): Promise<void> {
   const findLabelQuery = `
     query LabelByName($name: String!) {
-      issueLabels(filter: { name: { eq: $name } }, first: 1) {
+      issueLabels(filter: { name: { eq: $name } }, first: 20) {
         nodes { id }
       }
     }

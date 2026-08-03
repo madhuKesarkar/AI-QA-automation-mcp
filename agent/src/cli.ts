@@ -18,7 +18,6 @@ interface ParsedArgs {
   dryRun: boolean;
   envFilter?: Environment;
   skipPlanGate: boolean;
-  maxRoundsOverride?: number;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -29,7 +28,6 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (arg === '--dry-run') args.dryRun = true;
     else if (arg === '--skip-plan-gate') args.skipPlanGate = true;
     else if (arg.startsWith('--env=')) args.envFilter = arg.split('=')[1] as Environment;
-    else if (arg.startsWith('--max-rounds=')) args.maxRoundsOverride = Number(arg.split('=')[1]);
     else if (!arg.startsWith('--') && !args.ticket) args.ticket = arg;
   }
   return args;
@@ -71,7 +69,6 @@ async function main(): Promise<number> {
     }
     throw err;
   }
-  if (args.maxRoundsOverride) config.maxRounds = args.maxRoundsOverride;
 
   const workDir = `./project-envs/${ticketId}`;
   mkdirSync(workDir, { recursive: true });
@@ -111,7 +108,6 @@ async function main(): Promise<number> {
       linearApiKey: config.linearApiKey,
       slackWebhookUrl: config.slackWebhookUrl,
       environments: envsToRun,
-      maxRounds: config.maxRounds,
     });
   } catch (err) {
     logError('cli', (err as Error).message);
@@ -179,7 +175,7 @@ async function runPlanningPipeline(opts: PlanningOptions): Promise<number> {
 
 // ─── Execution Pipeline ──────────────────────────────────────────────────────
 // Triggered by: Linear label "ready for QA execution" (or --skip-plan-gate CLI flag)
-// Stages: executor + bugAnalyser (parallel) → statusReporter
+// Stages (run sequentially): executor → bugAnalyser → statusReporter
 
 interface ExecutionOptions {
   ticketId: string;
@@ -189,14 +185,13 @@ interface ExecutionOptions {
   linearApiKey: string;
   slackWebhookUrl?: string;
   environments: Environment[];
-  maxRounds: number;
 }
 
 async function runExecutionPipeline(opts: ExecutionOptions): Promise<number> {
   const {
     ticketId, issueId, issueUrl, workDir,
     linearApiKey, slackWebhookUrl,
-    environments, maxRounds,
+    environments,
   } = opts;
 
   // Look for the feature file written by the planning pipeline
@@ -216,9 +211,10 @@ async function runExecutionPipeline(opts: ExecutionOptions): Promise<number> {
     return EXIT_CODES.NEEDS_HUMAN;
   }
 
-  // Stage 4: bug-analyser (runs conceptually parallel; await here since we
-  // need verdicts complete before analysis — true async parallelism would
-  // require streaming Playwright results, which is a future improvement)
+  // Stage 4: bug-analyser. Runs after the executor because it classifies the
+  // executor's verdicts — it cannot start until execution is complete. (An
+  // earlier design imagined these running in parallel; that would require
+  // streaming Playwright results and is not implemented.)
   const bugReport = await runBugAnalyserAgent(
     ticketId,
     verdicts,
@@ -237,7 +233,6 @@ async function runExecutionPipeline(opts: ExecutionOptions): Promise<number> {
 
   const summary: RunSummary = {
     ticket: ticketId,
-    round: 1,
     verdicts,
     bugReport,
     overallStatus,
@@ -301,7 +296,6 @@ async function runWebhookServer(): Promise<number> {
         linearApiKey: config.linearApiKey,
         slackWebhookUrl: config.slackWebhookUrl,
         environments: ['sandbox', 'qa'],
-        maxRounds: config.maxRounds,
       });
       log('webhook', `Execution pipeline for ${ticketId} exited with code ${result}`);
     }
@@ -381,7 +375,7 @@ function printHelp(): void {
 
 Pipelines:
   "ready for QA" label     →  requirements-reviewer + test-planner (plan gate)
-  "ready for QA execution" →  executor + bug-analyser (parallel) + status-reporter
+  "ready for QA execution" →  executor → bug-analyser → status-reporter
 
 Direct usage:
   bw-qa-loop <TICKET-ID>                  Planning pipeline (stops at plan gate)
