@@ -12,14 +12,15 @@ const ENV_URLS: Record<Environment, string> = {
   qa: process.env.QA_URL ?? 'https://schools.qa.bwtest.net',
 };
 
-/** Merged selectorAgent + runner.
+/** Selector validation + Playwright execution in one agent.
  *
  * Validates all selectors referenced in the feature file are in the
  * registry, then executes Playwright against each environment.
  *
- * Selector validation failure stops the run and returns needs-human —
- * we still can't autonomously discover selectors (see the comment in the
- * original selectorAgent.ts). That constraint is unchanged. */
+ * Selector validation failure stops the run and returns needs-human — this
+ * agent cannot autonomously discover a selector for UI it has never seen;
+ * that requires a human-driven browser session (see agent/README.md,
+ * "Capturing new selectors"). */
 export async function runExecutorAgent(
   ticket: string,
   featurePath: string,

@@ -1,10 +1,11 @@
 const STAGE_COLORS: Record<string, string> = {
-  fetch: '\x1b[36m',
-  scenarios: '\x1b[35m',
-  selectors: '\x1b[33m',
-  runner: '\x1b[34m',
-  report: '\x1b[32m',
-  reporter: '\x1b[32m',
+  cli: '\x1b[36m',
+  webhook: '\x1b[36m',
+  'requirements-reviewer': '\x1b[35m',
+  'test-planner': '\x1b[33m',
+  executor: '\x1b[34m',
+  'bug-analyser': '\x1b[31m',
+  'status-reporter': '\x1b[32m',
 };
 const RESET = '\x1b[0m';
 

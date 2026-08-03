@@ -22,12 +22,16 @@ fi
 
 if [[ "${BW_QA_LOOP_LOCAL:-}" == "1" ]]; then
   echo "[bw-qa-loop] BW_QA_LOOP_LOCAL=1 set — running directly with host Node (unsandboxed)."
-  cd agent
-  if [[ ! -d dist ]]; then
-    npm install
-    npm run build
+  # Build inside agent/ (subshell, so the launcher's cwd is unchanged), but
+  # RUN from the repo root. The Docker path runs with WORKDIR /workspace (the
+  # repo root), so relative paths like ./project-envs and ./agent/storageState
+  # resolve there; running from agent/ instead would scatter artifacts into
+  # agent/project-envs and break storageState/.env resolution. Staying at the
+  # repo root keeps local and Docker runs byte-for-byte consistent.
+  if [[ ! -d agent/dist ]]; then
+    ( cd agent && npm install && npm run build )
   fi
-  exec node dist/cli.js "$@"
+  exec node agent/dist/cli.js "$@"
 fi
 
 if ! command -v docker &> /dev/null; then
