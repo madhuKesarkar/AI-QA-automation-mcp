@@ -142,22 +142,38 @@ async function runPlanningPipeline(opts: PlanningOptions): Promise<number> {
   if (requirementsDoc.uncertainSections.length > 0) {
     log(
       'cli',
-      `Requirements have ${requirementsDoc.uncertainSections.length} UNCERTAIN section(s) that must be resolved before test planning:\n` +
-        requirementsDoc.uncertainSections.map((s) => `  - ${s}`).join('\n')
+      `${requirementsDoc.uncertainSections.length} UNCERTAIN requirement(s) will be recorded as open ` +
+        `questions and left unscripted (partial planning) — they no longer block the run.`
+    );
+  }
+
+  // Stage 2: test-planner (partial planning — scripts the clear requirements,
+  // records uncertain/contradictory ones as open questions instead of blocking)
+  const plan = await runTestPlannerAgent(requirementsDoc, workDir);
+
+  if (plan.scenarioCount === 0) {
+    log(
+      'cli',
+      `No testable scenarios could be generated — nothing was clear enough to script. ` +
+        `Open questions: ${plan.openQuestions.join('; ')}`
     );
     return EXIT_CODES.NEEDS_HUMAN;
   }
 
-  // Stage 2: test-planner
-  const plan = await runTestPlannerAgent(requirementsDoc, workDir);
-
-  if (plan.needsHuman) {
-    log('cli', `Test plan needs human input: ${plan.openQuestions.join('; ')}`);
-    return EXIT_CODES.NEEDS_HUMAN;
+  if (plan.openQuestions.length > 0) {
+    log(
+      'cli',
+      `Partial plan: ${plan.scenarioCount} scenario(s) generated; ` +
+        `${plan.openQuestions.length} requirement(s) recorded as open questions for human follow-up.`
+    );
   }
 
   if (dryRun) {
-    log('cli', `Dry run complete. Feature: ${plan.featurePath}  Plan: ${plan.planPath}`);
+    log(
+      'cli',
+      `Dry run complete. Feature: ${plan.featurePath}  Plan: ${plan.planPath} ` +
+        `(${plan.scenarioCount} scenario(s), ${plan.openQuestions.length} open question(s))`
+    );
     return EXIT_CODES.VERIFIED;
   }
 

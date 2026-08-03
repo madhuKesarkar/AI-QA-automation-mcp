@@ -35,18 +35,25 @@ the executor drives a real browser.
 
 1. **requirements-reviewer** (`agents/requirementsReviewer.ts`) — fetches
    the ticket from Linear via GraphQL, parses acceptance criteria from the
-   description's markdown checklist, and fetches linked resources (Google
-   Docs and Linear documents; Figma / Slack / Orchard prototypes are
-   flagged inaccessible pending future work). A Claude call consolidates
-   everything into `requirements.md`. Anything unclear is flagged under
-   **UNCERTAIN** rather than guessed — and any UNCERTAIN section **blocks
-   test planning** until a human resolves it.
+   description's markdown checklist, and fetches linked resources. It reads
+   Google Docs and Linear documents directly; for sources it can't reach
+   headlessly (Figma, private Google Docs, Slack, Orchard prototypes) it
+   first checks a per-ticket **resource cache** (see "Resource cache"
+   below), and only flags a source inaccessible if neither works. A Claude
+   call consolidates everything into `requirements.md`, flagging anything
+   unclear or contradictory under **UNCERTAIN** rather than guessing.
+   UNCERTAIN items do **not** block the run — they are carried to the
+   planner as open questions (see "Partial planning" below).
 2. **test-planner** (`agents/testPlanner.ts`) — reads the consolidated
-   `requirements.md` (never the raw ticket noise) and produces tagged
-   Gherkin (`@smoke`/`@sanity`/`@functional`) plus a test-plan `.md` table.
-   Scenarios are grounded in `selector-registry.json` so they reuse known
-   selectors instead of guessing. UNCERTAIN sections are skipped and listed
-   as open questions instead.
+   `requirements.md` (never the raw ticket noise) and does **partial
+   planning**: it scripts every requirement clear enough to test and
+   records the UNCERTAIN/contradictory ones as open questions instead of
+   refusing to plan. Each scenario gets a priority (`@p0`/`@p1`/`@p2`) and
+   tier (`@smoke`/`@sanity`/`@functional`) tag, a `# requirement: §x` trace,
+   and — where a step needs a known selector — a `# selector: <key>`
+   annotation grounded in `selector-registry.json`. The `.md` plan table
+   carries Priority and Severity columns. The planner only returns
+   `needs-human` if it could produce **zero** scenarios.
 3. **[PLAN GATE]** — the run stops here by default. A human reviews the
    generated `.feature` + `.md`, then either re-runs with
    `--skip-plan-gate` or applies the **"ready for QA execution"** label to
@@ -76,6 +83,43 @@ the executor drives a real browser.
 
 `cli.ts` assembles the two environments' verdicts plus the bug report into
 a self-contained `report.html` before the status-reporter runs.
+
+## Partial planning (why the run no longer blocks on uncertainty)
+
+An earlier version refused to plan at all if the requirements had any
+UNCERTAIN item. That blocked whole tickets on a single open question. The
+planner now does **partial planning**: it scripts every requirement that is
+clear enough to test and records the uncertain or contradictory ones as
+**open questions** in the plan, rather than blocking.
+
+The "don't fake verification" principle is preserved where it matters — at
+the *scenario* level. The planner still **never scripts** a behavior it
+can't ground in a confirmed requirement; uncertain and contradictory items
+are written down as open questions, not turned into guessed assertions. The
+only thing removed is the all-or-nothing pipeline block. The run returns
+`needs-human` only if *nothing* could be planned.
+
+## Resource cache
+
+The reviewer fetches Linear docs and public Google Docs itself, but can't
+reach Figma, private Google Docs, Slack, or Orchard prototypes headlessly.
+Rather than let those become silent UNCERTAIN gaps, drop the pre-fetched
+content into `project-envs/<TICKET>/resources/` and list it in
+`resources/index.json`:
+
+```json
+[
+  { "match": "<google-doc-or-figma-id>", "file": "prd.md" }
+]
+```
+
+`match` is tested as a **substring of the resource URL** (robust to query
+params and markdown-link artifacts); `file` is the cached content, relative
+to `resources/`. The reviewer consults this cache **before** its own
+fetchers, so cached content always wins. This is how an out-of-band step
+(an MCP-enabled session, or a human) supplies content the sandboxed run
+can't fetch. The cache is gitignored; the resulting `requirements.md`,
+`.feature`, and plan `.md` are tracked so they're reviewable in a PR.
 
 ## The other human-in-the-loop step: capturing a session
 

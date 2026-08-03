@@ -10,5 +10,16 @@ allure-report/
 # agent orchestrator
 agent/dist/
 agent/storageState.*.json
-project-envs/
 storageState.*.json
+# orphaned pre-workdir-fix scratch (runs now write to repo-root project-envs/)
+agent/project-envs/
+
+# Per-ticket run artifacts under project-envs/: keep the reviewable QA
+# deliverables tracked (the .feature test plan, the plan .md table, and the
+# consolidated requirements.md) so teammates can review them in a PR. Ignore
+# only the noisy per-run intermediates below.
+project-envs/**/ticket.json
+project-envs/**/*.verdict.json
+project-envs/**/*.playwright-report.json
+project-envs/**/*.report.html
+project-envs/**/resources/
