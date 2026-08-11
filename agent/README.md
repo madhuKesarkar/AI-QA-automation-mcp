@@ -189,15 +189,24 @@ BW_QA_LOOP_LOCAL=1 ./agent/bin/bw-qa-loop FINOPS-456 --dry-run
 
 **Real and tested:**
 - Linear GraphQL fetch/comment/label calls (real API, real error handling)
-- Config validation and `doctor` diagnostics
+- The Bedrock Claude calls in requirements-reviewer and test-planner —
+  verified end-to-end against a real ticket (`FINOPS-445 --dry-run`, see
+  FINOPS-689): requirements consolidation, partial planning, and the
+  strict output parsing all hold up. Note that generated plans are *not*
+  reproducible between runs — re-running the same ticket rewrites
+  essentially the whole plan and shifts the scenario count.
+- Config validation and `doctor` diagnostics — but note `doctor` only
+  checks that the `docker` binary exists (not that the daemon is up) and
+  that `AWS_REGION` is set (not that AWS credentials actually resolve),
+  so it can report all-green in an environment where the pipeline cannot
+  run at all
 - Selector registry known/missing logic
 - Report aggregation and HTML rendering
 - CLI arg parsing and exit codes
 
 **Wired but not yet run end-to-end against real infra:**
-- The Claude calls in requirements-reviewer, test-planner, and bug-analyser
-  (need real Bedrock access and a real ticket with markdown-checklist AC to
-  fully validate the prompts and the strict output parsing)
+- The Claude call in bug-analyser (needs a real failing execution to
+  fully validate the prompt and the strict output parsing)
 - The executor's Playwright execution (needs Docker + a captured
   `storageState` to test against real Sandbox/QA)
 - The Docker build itself (validate on a real machine before first use)
