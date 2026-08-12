@@ -3,7 +3,13 @@ import { promisify } from 'node:util';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { loadRegistry, findMissingKeys } from '../lib/selectorRegistry.js';
 import { log } from '../lib/logger.js';
-import type { Environment, ScenarioResult, SelectorReport, Verdict } from '../types.js';
+import type {
+  Environment,
+  ExecutionStatus,
+  ScenarioResult,
+  SelectorReport,
+  Verdict,
+} from '../types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -41,15 +47,89 @@ export async function runExecutorAgent(
   }
   log('executor', `Selectors OK — ${extractSelectorKeys(readFileSync(featurePath, 'utf-8')).length} known selector(s).`);
 
-  // Phase 2: run against each environment
+  // Phase 2: compile Gherkin to Playwright specs. playwright-bdd cannot
+  // consume a .feature file directly — bddgen transpiles it into
+  // .features-gen/<feature-path>.spec.js, and that generated spec is what
+  // `playwright test` runs. bddgen is also where undefined step definitions
+  // surface, so a failure here means the glue code is missing.
+  const repoRoot = new URL('../../../', import.meta.url).pathname;
+  const gen = await runBddGen(repoRoot);
+  if (!gen.ok) {
+    log('executor', `bddgen failed — cannot execute. ${gen.diagnostic}`);
+    return {
+      selectorReport,
+      verdicts: environments.map((env) =>
+        emptyVerdict(ticket, env, 'error', gen.diagnostic)
+      ),
+    };
+  }
+
+  // The generated spec must exist, or the feature is not covered by the
+  // `features` globs in playwright.config.ts and would silently match no
+  // tests.
+  const specPath = generatedSpecPath(featurePath);
+  if (!existsSync(`${repoRoot}${specPath}`)) {
+    const diagnostic =
+      `bddgen produced no spec for ${featurePath} (expected ${specPath}). ` +
+      `The feature is probably outside the 'features' globs in playwright.config.ts.`;
+    log('executor', diagnostic);
+    return {
+      selectorReport,
+      verdicts: environments.map((env) => emptyVerdict(ticket, env, 'error', diagnostic)),
+    };
+  }
+
+  // Phase 3: run against each environment
   const verdicts: Verdict[] = [];
   for (const env of environments) {
     const storageStatePath = `./agent/storageState.${env}.json`;
-    const verdict = await runEnvironment(ticket, featurePath, env, storageStatePath, workDir);
+    const verdict = await runEnvironment(ticket, specPath, env, storageStatePath, workDir, repoRoot);
     verdicts.push(verdict);
   }
 
   return { selectorReport, verdicts };
+}
+
+/** Maps a .feature path to the spec playwright-bdd generates for it.
+ * e.g. project-envs/FINOPS-445/finops-445.feature
+ *   →  .features-gen/project-envs/FINOPS-445/finops-445.feature.spec.js */
+function generatedSpecPath(featurePath: string): string {
+  const relative = featurePath.replace(/^\.\//, '');
+  return `.features-gen/${relative}.spec.js`;
+}
+
+async function runBddGen(repoRoot: string): Promise<{ ok: boolean; diagnostic: string }> {
+  try {
+    await execFileAsync('npx', ['bddgen'], {
+      cwd: repoRoot,
+      env: process.env,
+      maxBuffer: 1024 * 1024 * 20,
+    });
+    return { ok: true, diagnostic: '' };
+  } catch (err) {
+    const execErr = err as { stdout?: string; stderr?: string };
+    const output = `${execErr.stderr ?? ''}${execErr.stdout ?? ''}`.trim();
+    return { ok: false, diagnostic: output.slice(0, 1000) || 'bddgen exited non-zero with no output' };
+  }
+}
+
+function emptyVerdict(
+  ticket: string,
+  environment: Environment,
+  executionStatus: ExecutionStatus,
+  diagnostic: string
+): Verdict {
+  return {
+    ticket,
+    environment,
+    ranAt: new Date().toISOString(),
+    executionStatus,
+    diagnostic,
+    results: [],
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+  };
 }
 
 function validateSelectors(ticket: string, featurePath: string): SelectorReport {
@@ -71,15 +151,15 @@ function extractSelectorKeys(featureContent: string): string[] {
 
 async function runEnvironment(
   ticket: string,
-  featurePath: string,
+  specPath: string,
   environment: Environment,
   storageStatePath: string,
-  workDir: string
+  workDir: string,
+  repoRoot: string
 ): Promise<Verdict> {
   const baseUrl = ENV_URLS[environment];
   log('executor', `Running against ${environment} (${baseUrl})...`);
 
-  const repoRoot = new URL('../../../', import.meta.url).pathname;
   const reportJsonPath = `${workDir}/${ticket.toLowerCase()}.${environment}.playwright-report.json`;
 
   const env = {
@@ -94,7 +174,7 @@ async function runEnvironment(
   try {
     const result = await execFileAsync(
       'npx',
-      ['playwright', 'test', featurePath, '--reporter=json'],
+      ['playwright', 'test', specPath, '--reporter=json'],
       { cwd: repoRoot, env, maxBuffer: 1024 * 1024 * 20 }
     );
     stdout = result.stdout;
@@ -112,10 +192,26 @@ async function runEnvironment(
   }
 
   const results = parsePlaywrightJson(stdout);
+
+  // Zero results is never a pass. Either Playwright matched no scenarios or
+  // it crashed before reporting — both must reach the reporter as an
+  // explicit non-run, not as "0 failed".
+  let executionStatus: ExecutionStatus = 'ran';
+  let diagnostic: string | undefined;
+  if (results.length === 0) {
+    const noTests = !stdout.trim() || /no tests found/i.test(stdout + stderr);
+    executionStatus = noTests && exitCode !== 0 ? 'error' : 'no-tests';
+    diagnostic =
+      `Playwright reported no scenario results for ${specPath} (exit ${exitCode}). ` +
+      (stderr.trim() ? `stderr: ${stderr.trim().slice(0, 500)}` : 'no stderr output.');
+  }
+
   const verdict: Verdict = {
     ticket,
     environment,
     ranAt: new Date().toISOString(),
+    executionStatus,
+    diagnostic,
     results,
     passed: results.filter((r) => r.status === 'passed').length,
     failed: results.filter((r) => r.status === 'failed').length,
@@ -125,10 +221,14 @@ async function runEnvironment(
   const verdictPath = `${workDir}/${ticket.toLowerCase()}.${environment}.verdict.json`;
   writeFileSync(verdictPath, JSON.stringify(verdict, null, 2) + '\n', 'utf-8');
 
-  log(
-    'executor',
-    `${environment}: ${verdict.passed} passed, ${verdict.failed} failed, ${verdict.skipped} skipped (exit ${exitCode})`
-  );
+  if (executionStatus === 'ran') {
+    log(
+      'executor',
+      `${environment}: ${verdict.passed} passed, ${verdict.failed} failed, ${verdict.skipped} skipped (exit ${exitCode})`
+    );
+  } else {
+    log('executor', `${environment}: NOTHING RAN [${executionStatus}] — ${diagnostic}`);
+  }
 
   return verdict;
 }

@@ -79,8 +79,24 @@ function renderLinearComment(summary: RunSummary): string {
   const totals = computeTotals(summary.verdicts);
 
   const envLines = summary.verdicts
-    .map((v) => `- **${v.environment}**: ${v.passed} passed, ${v.failed} failed, ${v.skipped} skipped`)
+    .map((v) =>
+      v.executionStatus === 'ran'
+        ? `- **${v.environment}**: ${v.passed} passed, ${v.failed} failed, ${v.skipped} skipped`
+        : `- **${v.environment}**: nothing ran (${v.executionStatus})`
+    )
     .join('\n');
+
+  // A non-run must never be presented as a clean result. Say what broke, so
+  // the reader knows this is an infrastructure problem and not a green suite.
+  const nonRuns = summary.verdicts.filter((v) => v.executionStatus !== 'ran');
+  const nonRunSection = nonRuns.length
+    ? `\n## ⚠️ No scenarios executed\n\n` +
+      nonRuns
+        .map((v) => `- **${v.environment}** [${v.executionStatus}]: ${v.diagnostic ?? 'no diagnostic recorded'}`)
+        .join('\n') +
+      `\n\n**The totals above are not a pass** — the suite did not run. ` +
+      `This needs a human to fix the test setup before QA results mean anything.`
+    : '';
 
   const statusEmoji =
     summary.overallStatus === 'verified' ? '✅' :
@@ -116,6 +132,7 @@ function renderLinearComment(summary: RunSummary): string {
 **Totals:** ${totals.passed} passed / ${totals.failed} failed / ${totals.skipped} skipped
 
 ${envLines}
+${nonRunSection}
 ${bugSection}
 ${envIssueSection}
 

@@ -71,10 +71,23 @@ export interface ScenarioResult {
   tracePath?: string;
 }
 
+/** Did the run actually happen?
+ *
+ * This is deliberately separate from pass/fail counts. A run that executed
+ * zero scenarios has failed === 0, which every downstream consumer would
+ * otherwise read as "everything passed" — the exact false-green this field
+ * exists to prevent. Only 'ran' means the numbers below are meaningful. */
+export type ExecutionStatus =
+  | 'ran' // Playwright executed at least one scenario
+  | 'no-tests' // the run succeeded but matched zero scenarios
+  | 'error'; // bddgen/Playwright could not run at all (e.g. undefined steps)
+
 export interface Verdict {
   ticket: string;
   environment: Environment;
   ranAt: string;
+  executionStatus: ExecutionStatus;
+  diagnostic?: string; // why, when executionStatus is not 'ran'
   results: ScenarioResult[];
   passed: number;
   failed: number;

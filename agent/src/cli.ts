@@ -227,6 +227,24 @@ async function runExecutionPipeline(opts: ExecutionOptions): Promise<number> {
     return EXIT_CODES.NEEDS_HUMAN;
   }
 
+  // Nothing executed is not a pass. The bug-analyser classifies failures, so
+  // it reads a zero-failure verdict as "all scenarios passed" — which for an
+  // empty run would post a green QA result to the ticket for a suite that
+  // never ran. Stop here and report the diagnostic instead.
+  const nonRuns = verdicts.filter((v) => v.executionStatus !== 'ran');
+  if (nonRuns.length > 0) {
+    for (const v of nonRuns) {
+      logError('cli', `${v.environment}: no scenarios executed [${v.executionStatus}] — ${v.diagnostic}`);
+    }
+    await runStatusReporterAgent(linearApiKey, issueId, issueUrl, {
+      ticket: ticketId,
+      verdicts,
+      overallStatus: 'needs-human',
+      reportPath: '',
+    }, slackWebhookUrl);
+    return EXIT_CODES.NEEDS_HUMAN;
+  }
+
   // Stage 4: bug-analyser. Runs after the executor because it classifies the
   // executor's verdicts — it cannot start until execution is complete. (An
   // earlier design imagined these running in parallel; that would require
