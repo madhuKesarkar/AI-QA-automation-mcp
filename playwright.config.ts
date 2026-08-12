@@ -5,12 +5,13 @@ import { defineBddConfig } from 'playwright-bdd';
 // playwright-bdd reads .feature files and generates real Playwright test
 // files under .features-gen (gitignored). You run `npx bddgen` before
 // `playwright test`, or use the combined `npm test` script below.
-// Two feature sources: the curated suite in tests/features/, and
-// agent-generated per-ticket plans under project-envs/<TICKET>/ (written by
-// the test-planner, approved by PR merge). Both compile into .features-gen
-// and share the step definitions in tests/steps/.
+// This config covers ONLY the curated suite in tests/features/.
+// Agent-generated per-ticket plans under project-envs/<TICKET>/ compile via
+// playwright.generated.config.ts instead — a deliberately separate config so
+// that a generated plan with missing step definitions fails its own bddgen
+// run and can never break CI for the curated suite.
 const testDir = defineBddConfig({
-  features: ['tests/features/**/*.feature', 'project-envs/**/*.feature'],
+  features: 'tests/features/**/*.feature',
   steps: 'tests/steps/**/*.ts',
 });
 

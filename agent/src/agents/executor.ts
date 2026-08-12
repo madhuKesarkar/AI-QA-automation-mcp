@@ -49,9 +49,13 @@ export async function runExecutorAgent(
 
   // Phase 2: compile Gherkin to Playwright specs. playwright-bdd cannot
   // consume a .feature file directly — bddgen transpiles it into
-  // .features-gen/<feature-path>.spec.js, and that generated spec is what
+  // <outputDir>/<feature-path>.spec.js, and that generated spec is what
   // `playwright test` runs. bddgen is also where undefined step definitions
   // surface, so a failure here means the glue code is missing.
+  //
+  // Generated plans use their own Playwright config so that a plan with
+  // missing steps cannot break the curated suite's bddgen run (and therefore
+  // CI) — see playwright.generated.config.ts.
   const repoRoot = new URL('../../../', import.meta.url).pathname;
   const gen = await runBddGen(repoRoot);
   if (!gen.ok) {
@@ -71,7 +75,7 @@ export async function runExecutorAgent(
   if (!existsSync(`${repoRoot}${specPath}`)) {
     const diagnostic =
       `bddgen produced no spec for ${featurePath} (expected ${specPath}). ` +
-      `The feature is probably outside the 'features' globs in playwright.config.ts.`;
+      `The feature is probably outside the 'features' glob in ${GENERATED_CONFIG}.`;
     log('executor', diagnostic);
     return {
       selectorReport,
@@ -90,17 +94,25 @@ export async function runExecutorAgent(
   return { selectorReport, verdicts };
 }
 
+/** Playwright config that owns agent-generated plans (see the comment in
+ * that file for why it is separate from playwright.config.ts). */
+const GENERATED_CONFIG = 'playwright.generated.config.ts';
+
+/** outputDir configured in GENERATED_CONFIG — kept in sync manually; the
+ * existsSync check in runExecutorAgent fails loudly if these diverge. */
+const GENERATED_OUTPUT_DIR = '.features-gen-generated';
+
 /** Maps a .feature path to the spec playwright-bdd generates for it.
  * e.g. project-envs/FINOPS-445/finops-445.feature
- *   →  .features-gen/project-envs/FINOPS-445/finops-445.feature.spec.js */
+ *   →  .features-gen-generated/project-envs/FINOPS-445/finops-445.feature.spec.js */
 function generatedSpecPath(featurePath: string): string {
   const relative = featurePath.replace(/^\.\//, '');
-  return `.features-gen/${relative}.spec.js`;
+  return `${GENERATED_OUTPUT_DIR}/${relative}.spec.js`;
 }
 
 async function runBddGen(repoRoot: string): Promise<{ ok: boolean; diagnostic: string }> {
   try {
-    await execFileAsync('npx', ['bddgen'], {
+    await execFileAsync('npx', ['bddgen', '--config', GENERATED_CONFIG], {
       cwd: repoRoot,
       env: process.env,
       maxBuffer: 1024 * 1024 * 20,
@@ -174,7 +186,7 @@ async function runEnvironment(
   try {
     const result = await execFileAsync(
       'npx',
-      ['playwright', 'test', specPath, '--reporter=json'],
+      ['playwright', 'test', '--config', GENERATED_CONFIG, specPath, '--reporter=json'],
       { cwd: repoRoot, env, maxBuffer: 1024 * 1024 * 20 }
     );
     stdout = result.stdout;
