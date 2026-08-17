@@ -57,7 +57,7 @@ export async function runExecutorAgent(
   // missing steps cannot break the curated suite's bddgen run (and therefore
   // CI) — see playwright.generated.config.ts.
   const repoRoot = new URL('../../../', import.meta.url).pathname;
-  const gen = await runBddGen(repoRoot);
+  const gen = await runBddGen(repoRoot, featurePath);
   if (!gen.ok) {
     log('executor', `bddgen failed — cannot execute. ${gen.diagnostic}`);
     return {
@@ -87,7 +87,15 @@ export async function runExecutorAgent(
   const verdicts: Verdict[] = [];
   for (const env of environments) {
     const storageStatePath = `./agent/storageState.${env}.json`;
-    const verdict = await runEnvironment(ticket, specPath, env, storageStatePath, workDir, repoRoot);
+    const verdict = await runEnvironment(
+      ticket,
+      specPath,
+      featurePath,
+      env,
+      storageStatePath,
+      workDir,
+      repoRoot
+    );
     verdicts.push(verdict);
   }
 
@@ -110,11 +118,16 @@ function generatedSpecPath(featurePath: string): string {
   return `${GENERATED_OUTPUT_DIR}/${relative}.spec.js`;
 }
 
-async function runBddGen(repoRoot: string): Promise<{ ok: boolean; diagnostic: string }> {
+async function runBddGen(
+  repoRoot: string,
+  featurePath: string
+): Promise<{ ok: boolean; diagnostic: string }> {
   try {
     await execFileAsync('npx', ['bddgen', '--config', GENERATED_CONFIG], {
       cwd: repoRoot,
-      env: process.env,
+      // Compile only this ticket's feature — see GENERATED_FEATURES in
+      // playwright.generated.config.ts.
+      env: { ...process.env, GENERATED_FEATURES: featurePath.replace(/^\.\//, '') },
       maxBuffer: 1024 * 1024 * 20,
     });
     return { ok: true, diagnostic: '' };
@@ -164,6 +177,7 @@ function extractSelectorKeys(featureContent: string): string[] {
 async function runEnvironment(
   ticket: string,
   specPath: string,
+  featurePath: string,
   environment: Environment,
   storageStatePath: string,
   workDir: string,
@@ -177,6 +191,9 @@ async function runEnvironment(
   const env = {
     ...process.env,
     BASE_URL: baseUrl,
+    // Keep the config's feature glob identical to the one bddgen just compiled
+    // with, so Playwright resolves the same testDir.
+    GENERATED_FEATURES: featurePath.replace(/^\.\//, ''),
     ...(existsSync(storageStatePath) ? { STORAGE_STATE: storageStatePath } : {}),
   };
 

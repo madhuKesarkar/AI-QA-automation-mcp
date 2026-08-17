@@ -6,11 +6,19 @@ import { log, logError } from './lib/logger.js';
 import { startWebhookServer, type LinearWebhookPayload } from './lib/linearWebhook.js';
 import { runRequirementsReviewerAgent } from './agents/requirementsReviewer.js';
 import { runTestPlannerAgent } from './agents/testPlanner.js';
+import { runStepGeneratorAgent } from './agents/stepGenerator.js';
 import { runExecutorAgent } from './agents/executor.js';
 import { runBugAnalyserAgent } from './agents/bugAnalyser.js';
 import { runStatusReporterAgent } from './agents/statusReporter.js';
 import { fetchTicket } from './lib/linear.js';
-import { EXIT_CODES, LINEAR_LABELS, type Environment, type Verdict, type RunSummary } from './types.js';
+import {
+  EXIT_CODES,
+  LINEAR_LABELS,
+  type Environment,
+  type StepGenerationResult,
+  type Verdict,
+  type RunSummary,
+} from './types.js';
 
 interface ParsedArgs {
   command: string;
@@ -18,15 +26,22 @@ interface ParsedArgs {
   dryRun: boolean;
   envFilter?: Environment;
   skipPlanGate: boolean;
+  skipSteps: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
   const [command, ...rest] = argv;
-  const args: ParsedArgs = { command: command ?? 'help', dryRun: false, skipPlanGate: false };
+  const args: ParsedArgs = {
+    command: command ?? 'help',
+    dryRun: false,
+    skipPlanGate: false,
+    skipSteps: false,
+  };
 
   for (const arg of rest) {
     if (arg === '--dry-run') args.dryRun = true;
     else if (arg === '--skip-plan-gate') args.skipPlanGate = true;
+    else if (arg === '--skip-steps') args.skipSteps = true;
     else if (arg.startsWith('--env=')) args.envFilter = arg.split('=')[1] as Environment;
     else if (!arg.startsWith('--') && !args.ticket) args.ticket = arg;
   }
@@ -82,6 +97,7 @@ async function main(): Promise<number> {
         linearApiKey: config.linearApiKey,
         googleDocsApiKey: config.googleDocsApiKey,
         dryRun: args.dryRun,
+        skipSteps: args.skipSteps,
       });
     }
 
@@ -93,6 +109,7 @@ async function main(): Promise<number> {
       googleDocsApiKey: config.googleDocsApiKey,
       dryRun: false,
       silent: true, // skip the plan gate pause since --skip-plan-gate was passed
+      skipSteps: args.skipSteps,
     });
 
     if (planResult !== EXIT_CODES.VERIFIED) return planResult;
@@ -126,10 +143,11 @@ interface PlanningOptions {
   googleDocsApiKey?: string;
   dryRun?: boolean;
   silent?: boolean; // skip the plan gate log if proceeding immediately to execution
+  skipSteps?: boolean; // skip step-definition generation (Bedrock calls)
 }
 
 async function runPlanningPipeline(opts: PlanningOptions): Promise<number> {
-  const { ticketId, workDir, linearApiKey, googleDocsApiKey, dryRun, silent } = opts;
+  const { ticketId, workDir, linearApiKey, googleDocsApiKey, dryRun, silent, skipSteps } = opts;
 
   // Stage 1: requirements-reviewer
   const requirementsDoc = await runRequirementsReviewerAgent(
@@ -168,13 +186,45 @@ async function runPlanningPipeline(opts: PlanningOptions): Promise<number> {
     );
   }
 
+  // Stage 3: step-generator. A .feature with undefined steps cannot be
+  // compiled by playwright-bdd, so the glue is part of the plan, not part of
+  // execution — the human reviewing the plan reviews the step definitions and
+  // the list of selectors still needed along with it.
+  let steps: StepGenerationResult | undefined;
+  if (!skipSteps) {
+    const repoRoot = new URL('../../', import.meta.url).pathname;
+    steps = await runStepGeneratorAgent(ticketId, plan.featurePath, repoRoot);
+
+    if (steps.status === 'failed') {
+      logError(
+        'cli',
+        `Step generation left ${steps.missingStepsAfter} step(s) undefined — the feature will not compile, ` +
+          `so it cannot execute. Review ${steps.stepsPath}.`
+      );
+    } else if (steps.unimplementedSteps > 0) {
+      log(
+        'cli',
+        `${steps.implementedSteps}/${steps.totalSteps} step(s) implemented; ${steps.unimplementedSteps} blocked ` +
+          `on selectors a human must capture (see agent/README.md, "Capturing new selectors"). ` +
+          `Those scenarios will fail loudly rather than report false coverage.`
+      );
+    }
+  }
+
   if (dryRun) {
     log(
       'cli',
       `Dry run complete. Feature: ${plan.featurePath}  Plan: ${plan.planPath} ` +
-        `(${plan.scenarioCount} scenario(s), ${plan.openQuestions.length} open question(s))`
+        `(${plan.scenarioCount} scenario(s), ${plan.openQuestions.length} open question(s))` +
+        (steps ? `  Steps: ${steps.stepsPath} [${steps.status}]` : '')
     );
     return EXIT_CODES.VERIFIED;
+  }
+
+  // A plan whose steps do not compile is not executable, so the gate cannot
+  // be "approved" into a runnable state — stop regardless of the gate.
+  if (steps?.status === 'failed') {
+    return EXIT_CODES.NEEDS_HUMAN;
   }
 
   if (!silent) {
@@ -413,7 +463,8 @@ Pipelines:
 
 Direct usage:
   bw-qa-loop <TICKET-ID>                  Planning pipeline (stops at plan gate)
-  bw-qa-loop <TICKET-ID> --dry-run        Requirements + scenarios only, no gate, no execution
+  bw-qa-loop <TICKET-ID> --dry-run        Requirements + scenarios + steps, no gate, no execution
+  bw-qa-loop <TICKET-ID> --skip-steps     Skip step-definition generation
   bw-qa-loop <TICKET-ID> --skip-plan-gate Full pipeline (planning + execution)
   bw-qa-loop <TICKET-ID> --env=sandbox    Execution against one environment only
   bw-qa-loop webhook                      Start webhook server (label-driven automation)

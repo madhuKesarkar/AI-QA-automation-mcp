@@ -15,8 +15,13 @@ import { defineBddConfig } from 'playwright-bdd';
 //
 // Step definitions are shared with the curated suite on purpose: glue code is
 // reusable, and the step-generator agent writes into the same tests/steps/.
+// GENERATED_FEATURES narrows the glob to a single ticket's feature. The agent
+// sets it so that one ticket's unglued plan cannot make bddgen exit 1 for a
+// different ticket's run — same blast-radius reasoning as splitting the config,
+// one level down. Unset (e.g. running the generated suite by hand) means all of
+// them.
 const testDir = defineBddConfig({
-  features: 'project-envs/**/*.feature',
+  features: process.env.GENERATED_FEATURES || 'project-envs/**/*.feature',
   steps: 'tests/steps/**/*.ts',
   outputDir: '.features-gen-generated',
 });

@@ -42,6 +42,23 @@ export interface ScenarioPlan {
   openQuestions: string[]; // things the writer explicitly refused to guess at
 }
 
+/** Output of the step-generator agent — the glue code between a generated
+ * .feature and Playwright. Without it playwright-bdd cannot compile the
+ * feature at all, so a plan with no step definitions can never execute.
+ *
+ * 'partial' is the expected steady state while the selector registry is
+ * small: the feature compiles and runs, but the steps that would have needed
+ * an unverified locator throw instead of guessing. */
+export interface StepGenerationResult {
+  ticket: string;
+  stepsPath: string; // e.g. tests/steps/finops-445.steps.ts
+  totalSteps: number;
+  implementedSteps: number;
+  unimplementedSteps: number; // blocked on selectors a human must capture
+  missingStepsAfter: number; // still undefined after generation; must be 0
+  status: 'complete' | 'partial' | 'failed';
+}
+
 export type SelectorStatus = 'known' | 'captured-this-run' | 'needs-human';
 
 export interface SelectorRegistryEntry {
