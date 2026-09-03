@@ -1,6 +1,8 @@
 node_modules/
 .features-gen/
+.features-gen-generated/
 playwright-report/
+playwright-report-generated/
 test-results/
 allure-results/
 allure-report/

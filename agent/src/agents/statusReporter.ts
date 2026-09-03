@@ -79,8 +79,24 @@ function renderLinearComment(summary: RunSummary): string {
   const totals = computeTotals(summary.verdicts);
 
   const envLines = summary.verdicts
-    .map((v) => `- **${v.environment}**: ${v.passed} passed, ${v.failed} failed, ${v.skipped} skipped`)
+    .map((v) =>
+      v.executionStatus === 'ran'
+        ? `- **${v.environment}**: ${v.passed} passed, ${v.failed} failed, ${v.skipped} skipped`
+        : `- **${v.environment}**: nothing ran (${v.executionStatus})`
+    )
     .join('\n');
+
+  // A non-run must never be presented as a clean result. Say what broke, so
+  // the reader knows this is an infrastructure problem and not a green suite.
+  const nonRuns = summary.verdicts.filter((v) => v.executionStatus !== 'ran');
+  const nonRunSection = nonRuns.length
+    ? `\n## ⚠️ No scenarios executed\n\n` +
+      nonRuns
+        .map((v) => `- **${v.environment}** [${v.executionStatus}]: ${v.diagnostic ?? 'no diagnostic recorded'}`)
+        .join('\n') +
+      `\n\n**The totals above are not a pass** — the suite did not run. ` +
+      `This needs a human to fix the test setup before QA results mean anything.`
+    : '';
 
   const statusEmoji =
     summary.overallStatus === 'verified' ? '✅' :
@@ -110,14 +126,23 @@ function renderLinearComment(summary: RunSummary): string {
     envIssueSection = `\n## Environment Issues (not product bugs)\n\n${issueLines}`;
   }
 
+  // Provenance: the exact merged plan these results came from, so a reader can
+  // tie the verdict to the reviewed-and-approved plan rather than trust that
+  // "some plan for this ticket" ran.
+  const provenance = summary.approvedCommit
+    ? `\n_Executed the approved plan merged at \`${summary.approvedCommit.slice(0, 8)}\`._`
+    : '';
+
   return `## ${statusEmoji} QA Automation — ${summary.ticket}
 
 **Status:** ${summary.overallStatus}
 **Totals:** ${totals.passed} passed / ${totals.failed} failed / ${totals.skipped} skipped
 
 ${envLines}
+${nonRunSection}
 ${bugSection}
 ${envIssueSection}
+${provenance}
 
 _Automated by bw-qa-loop. Product-behavior failures require human follow-up — this tool does not auto-retry those._`;
 }

@@ -42,6 +42,31 @@ export interface ScenarioPlan {
   openQuestions: string[]; // things the writer explicitly refused to guess at
 }
 
+/** Output of the step-generator agent — the glue code between a generated
+ * .feature and Playwright. Without it playwright-bdd cannot compile the
+ * feature at all, so a plan with no step definitions can never execute.
+ *
+ * 'partial' is the expected steady state while the selector registry is
+ * small: the feature compiles and runs, but the steps that would have needed
+ * an unverified locator throw instead of guessing. */
+export interface StepGenerationResult {
+  ticket: string;
+  stepsPath: string; // e.g. tests/steps/finops-445.steps.ts
+  totalSteps: number;
+  implementedSteps: number;
+  unimplementedSteps: number; // blocked on selectors a human must capture
+  missingStepsAfter: number; // still undefined after generation; must be 0
+  status: 'complete' | 'partial' | 'failed';
+}
+
+/** Marker the step-generator emits (inside a thrown Error) for a step whose UI
+ * is not in the verified selector registry — it refuses to guess a locator and
+ * throws this instead. The selector gate keys off it: a generated step
+ * definition either resolves to a registry-verified locator or carries this
+ * marker, so the markers ARE the plan's unresolved selectors. Shared here so
+ * the generator that writes it and the gate that reads it can never drift. */
+export const UNIMPLEMENTED_STEP_MARKER = 'UNIMPLEMENTED_STEP';
+
 export type SelectorStatus = 'known' | 'captured-this-run' | 'needs-human';
 
 export interface SelectorRegistryEntry {
@@ -71,10 +96,23 @@ export interface ScenarioResult {
   tracePath?: string;
 }
 
+/** Did the run actually happen?
+ *
+ * This is deliberately separate from pass/fail counts. A run that executed
+ * zero scenarios has failed === 0, which every downstream consumer would
+ * otherwise read as "everything passed" — the exact false-green this field
+ * exists to prevent. Only 'ran' means the numbers below are meaningful. */
+export type ExecutionStatus =
+  | 'ran' // Playwright executed at least one scenario
+  | 'no-tests' // the run succeeded but matched zero scenarios
+  | 'error'; // bddgen/Playwright could not run at all (e.g. undefined steps)
+
 export interface Verdict {
   ticket: string;
   environment: Environment;
   ranAt: string;
+  executionStatus: ExecutionStatus;
+  diagnostic?: string; // why, when executionStatus is not 'ran'
   results: ScenarioResult[];
   passed: number;
   failed: number;
@@ -109,6 +147,29 @@ export interface RunSummary {
   bugReport?: BugReport;
   overallStatus: 'verified' | 'needs-human' | 'error' | 'product-bug-found';
   reportPath: string;
+  approvedCommit?: string; // origin/main sha the executed plan was verified against
+}
+
+/** A plan proposed for review as a pull request. Approval is defined as
+ * merging this PR to main — see verifyPlanApproved. */
+export interface PlanPr {
+  ticket: string;
+  branch: string;
+  commitSha: string;
+  prUrl: string; // '' if gh could not open the PR (the branch is still pushed)
+  alreadyOnMain: boolean; // plan on disk already equals main — nothing to propose
+}
+
+/** Whether the plan on disk is the approved (merged) plan. When approved,
+ * records the merged commit and the exact blob sha of each artifact, so the
+ * executed feature is provably the reviewed one rather than a re-generated
+ * (and nondeterministic) look-alike. */
+export interface PlanApproval {
+  ticket: string;
+  approved: boolean;
+  reason?: string; // why not, when approved === false
+  mergedCommit?: string; // origin/main sha the plan was verified against
+  files: Array<{ path: string; sha: string }>;
 }
 
 // Linear label names that drive the two trigger points.
