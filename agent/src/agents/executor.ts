@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { loadRegistry, findMissingKeys } from '../lib/selectorRegistry.js';
 import { log } from '../lib/logger.js';
+import { UNIMPLEMENTED_STEP_MARKER } from '../types.js';
 import type {
   Environment,
   ExecutionStatus,
@@ -35,17 +35,19 @@ export async function runExecutorAgent(
 ): Promise<{ selectorReport: SelectorReport; verdicts: Verdict[] }> {
   log('executor', `Starting execution for ${ticket}...`);
 
-  // Phase 1: selector validation
-  const selectorReport = validateSelectors(ticket, featurePath);
+  const repoRoot = new URL('../../../', import.meta.url).pathname;
+
+  // Phase 1: selector validation, derived from the GENERATED step definitions.
+  const selectorReport = validateSelectors(ticket, repoRoot);
   if (selectorReport.status === 'needs-human') {
     log(
       'executor',
-      `Blocked on selectors: ${selectorReport.missing.join(', ')}. ` +
+      `Blocked on selectors: ${selectorReport.missing.join('; ')}. ` +
         `A human must verify these via a real browser session before this ticket can run headlessly.`
     );
     return { selectorReport, verdicts: [] };
   }
-  log('executor', `Selectors OK — ${extractSelectorKeys(readFileSync(featurePath, 'utf-8')).length} known selector(s).`);
+  log('executor', 'Selectors OK — every generated step definition resolves to a registry-verified locator.');
 
   // Phase 2: compile Gherkin to Playwright specs. playwright-bdd cannot
   // consume a .feature file directly — bddgen transpiles it into
@@ -56,7 +58,6 @@ export async function runExecutorAgent(
   // Generated plans use their own Playwright config so that a plan with
   // missing steps cannot break the curated suite's bddgen run (and therefore
   // CI) — see playwright.generated.config.ts.
-  const repoRoot = new URL('../../../', import.meta.url).pathname;
   const gen = await runBddGen(repoRoot, featurePath);
   if (!gen.ok) {
     log('executor', `bddgen failed — cannot execute. ${gen.diagnostic}`);
@@ -157,21 +158,51 @@ function emptyVerdict(
   };
 }
 
-function validateSelectors(ticket: string, featurePath: string): SelectorReport {
-  const featureContent = readFileSync(featurePath, 'utf-8');
-  const requiredKeys = extractSelectorKeys(featureContent);
-  const registry = loadRegistry();
-  const missing = findMissingKeys(registry, requiredKeys);
+/** The selector gate, derived from the GENERATED step definitions rather than
+ * planner-emitted `# selector:` comments.
+ *
+ * The old gate parsed `# selector:` hints out of the .feature and checked them
+ * against the registry — the FINOPS-445 plan declared 5 keys, all present, so
+ * it waved 83 scenarios through as "Selectors OK" (FINOPS-761). Those comments
+ * are the planner's guess at what a scenario needs; they are not what runs.
+ *
+ * The step-generator, by contrast, either resolves a step to a registry-
+ * verified locator or emits `throw new Error('UNIMPLEMENTED_STEP: needs
+ * verified selector for <element>')` rather than guess one. So the steps file
+ * that will actually execute carries an honest record of every unresolved
+ * selector, and the gate blocks on exactly those — which is what makes it block
+ * on a scenario whose UI is not in the registry. */
+function validateSelectors(ticket: string, repoRoot: string): SelectorReport {
+  const stepsPath = `tests/steps/${ticket.toLowerCase()}.steps.ts`;
+  const absoluteStepsPath = `${repoRoot}${stepsPath}`;
 
-  if (missing.length > 0) {
-    return { ticket, status: 'needs-human', missing };
+  if (!existsSync(absoluteStepsPath)) {
+    return {
+      ticket,
+      status: 'needs-human',
+      missing: [
+        `no generated step definitions at ${stepsPath} — the plan has no glue to run ` +
+          `(step generation was skipped or produced nothing to execute)`,
+      ],
+    };
+  }
+
+  const unresolved = extractUnresolvedSelectors(readFileSync(absoluteStepsPath, 'utf-8'));
+  if (unresolved.length > 0) {
+    return { ticket, status: 'needs-human', missing: unresolved };
   }
   return { ticket, status: 'known', missing: [] };
 }
 
-function extractSelectorKeys(featureContent: string): string[] {
-  const matches = featureContent.matchAll(/#\s*selector:\s*([\w.]+)/g);
-  return [...matches].map((m) => m[1]);
+/** The unresolved-selector descriptions carried by the step definitions'
+ * UNIMPLEMENTED_STEP throws, de-duplicated. */
+function extractUnresolvedSelectors(stepsSource: string): string[] {
+  const pattern = new RegExp(
+    `${UNIMPLEMENTED_STEP_MARKER}:\\s*needs verified selector for ([^'"\\n]+)`,
+    'g'
+  );
+  const descriptions = [...stepsSource.matchAll(pattern)].map((m) => m[1].trim());
+  return [...new Set(descriptions)];
 }
 
 async function runEnvironment(

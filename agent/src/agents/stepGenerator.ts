@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { callClaude } from '../lib/anthropic.js';
 import { loadRegistry } from '../lib/selectorRegistry.js';
 import { log } from '../lib/logger.js';
+import { UNIMPLEMENTED_STEP_MARKER as UNIMPLEMENTED } from '../types.js';
 import type { StepGenerationResult } from '../types.js';
 
 const execFileAsync = promisify(execFile);
@@ -41,11 +42,12 @@ interface MissingSteps {
   stubs: string[];
 }
 
-/** Marker for a step the agent refused to implement because it would have
- * required guessing a locator for UI that is not in the selector registry.
- * Thrown rather than skipped: an unimplemented step must never be able to
- * report as a pass. The bug-analyser classifies these as test-issues. */
-const UNIMPLEMENTED = 'UNIMPLEMENTED_STEP';
+// UNIMPLEMENTED (imported as UNIMPLEMENTED_STEP_MARKER) marks a step the agent
+// refused to implement because it would have required guessing a locator for UI
+// not in the selector registry. Thrown rather than skipped: an unimplemented
+// step must never report as a pass. The selector gate (executor.ts) treats
+// these throws as the plan's unresolved selectors; the bug-analyser classifies
+// them as test-issues.
 
 const SYSTEM_PROMPT = `You write Playwright step definitions for playwright-bdd, in TypeScript.
 

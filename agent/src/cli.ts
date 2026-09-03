@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import 'dotenv/config';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { loadConfig, runDoctorChecks, ConfigError } from './lib/env.js';
 import { log, logError } from './lib/logger.js';
 import { startWebhookServer, type LinearWebhookPayload } from './lib/linearWebhook.js';
@@ -10,12 +10,16 @@ import { runStepGeneratorAgent } from './agents/stepGenerator.js';
 import { runExecutorAgent } from './agents/executor.js';
 import { runBugAnalyserAgent } from './agents/bugAnalyser.js';
 import { runStatusReporterAgent } from './agents/statusReporter.js';
-import { fetchTicket } from './lib/linear.js';
+import { fetchTicket, postComment, addLabel } from './lib/linear.js';
+import { openPlanPr, verifyPlanApproved } from './lib/planApproval.js';
 import {
   EXIT_CODES,
   LINEAR_LABELS,
   type Environment,
+  type RequirementsDoc,
+  type ScenarioPlan,
   type StepGenerationResult,
+  type PlanPr,
   type Verdict,
   type RunSummary,
 } from './types.js';
@@ -89,42 +93,34 @@ async function main(): Promise<number> {
   mkdirSync(workDir, { recursive: true });
 
   try {
-    if (args.dryRun || !args.skipPlanGate) {
-      // Planning pipeline only (equivalent to "ready for QA" trigger)
-      return await runPlanningPipeline({
+    // --skip-plan-gate no longer re-plans. Plan generation is nondeterministic
+    // (re-running FINOPS-445 moved 68 → 83 scenarios and rewrote ~1100 lines),
+    // so re-planning here would execute a plan nobody reviewed. It now goes
+    // straight to execution, which refuses any plan not merged to main (see
+    // runExecutionPipeline → verifyPlanApproved). --dry-run stays a
+    // planning-only variant and never executes.
+    if (args.skipPlanGate && !args.dryRun) {
+      const ticket = await fetchTicket(config.linearApiKey, ticketId);
+      const envsToRun: Environment[] = args.envFilter ? [args.envFilter] : ['sandbox', 'qa'];
+      return await runExecutionPipeline({
         ticketId,
+        issueId: ticket.id,
+        issueUrl: ticket.url,
         workDir,
         linearApiKey: config.linearApiKey,
-        googleDocsApiKey: config.googleDocsApiKey,
-        dryRun: args.dryRun,
-        skipSteps: args.skipSteps,
+        slackWebhookUrl: config.slackWebhookUrl,
+        environments: envsToRun,
       });
     }
 
-    // Full pipeline (planning + execution)
-    const planResult = await runPlanningPipeline({
+    // Planning pipeline: requirements → plan → steps → open a plan PR (the gate).
+    return await runPlanningPipeline({
       ticketId,
       workDir,
       linearApiKey: config.linearApiKey,
       googleDocsApiKey: config.googleDocsApiKey,
-      dryRun: false,
-      silent: true, // skip the plan gate pause since --skip-plan-gate was passed
+      dryRun: args.dryRun,
       skipSteps: args.skipSteps,
-    });
-
-    if (planResult !== EXIT_CODES.VERIFIED) return planResult;
-
-    const ticket = await fetchTicket(config.linearApiKey, ticketId);
-    const envsToRun: Environment[] = args.envFilter ? [args.envFilter] : ['sandbox', 'qa'];
-
-    return await runExecutionPipeline({
-      ticketId,
-      issueId: ticket.id,
-      issueUrl: ticket.url,
-      workDir,
-      linearApiKey: config.linearApiKey,
-      slackWebhookUrl: config.slackWebhookUrl,
-      environments: envsToRun,
     });
   } catch (err) {
     logError('cli', (err as Error).message);
@@ -142,12 +138,11 @@ interface PlanningOptions {
   linearApiKey: string;
   googleDocsApiKey?: string;
   dryRun?: boolean;
-  silent?: boolean; // skip the plan gate log if proceeding immediately to execution
   skipSteps?: boolean; // skip step-definition generation (Bedrock calls)
 }
 
 async function runPlanningPipeline(opts: PlanningOptions): Promise<number> {
-  const { ticketId, workDir, linearApiKey, googleDocsApiKey, dryRun, silent, skipSteps } = opts;
+  const { ticketId, workDir, linearApiKey, googleDocsApiKey, dryRun, skipSteps } = opts;
 
   // Stage 1: requirements-reviewer
   const requirementsDoc = await runRequirementsReviewerAgent(
@@ -221,22 +216,118 @@ async function runPlanningPipeline(opts: PlanningOptions): Promise<number> {
     return EXIT_CODES.VERIFIED;
   }
 
-  // A plan whose steps do not compile is not executable, so the gate cannot
-  // be "approved" into a runnable state — stop regardless of the gate.
+  // A plan whose steps do not compile is not executable, so it cannot be
+  // proposed as a runnable plan — stop before opening a PR.
   if (steps?.status === 'failed') {
     return EXIT_CODES.NEEDS_HUMAN;
   }
 
-  if (!silent) {
+  // The plan gate is a pull request. Propose the plan + glue on a per-ticket
+  // branch, open a PR, and link it on the ticket — merging the PR is the
+  // approval. Nothing runs against an environment until the executor confirms
+  // the plan on disk is byte-for-byte what was merged (runExecutionPipeline).
+  const repoRoot = new URL('../../', import.meta.url).pathname;
+  const planFiles = collectPlanFiles(repoRoot, ticketId, plan, requirementsDoc, steps);
+  const pr = await openPlanPr({
+    ticket: ticketId,
+    repoRoot,
+    files: planFiles,
+    title: `QA plan: ${ticketId}`,
+    body: planPrBody(ticketId, plan, steps),
+  });
+
+  if (pr.alreadyOnMain) {
     log(
       'cli',
-      `Plan gate: review ${plan.planPath} then re-run with --skip-plan-gate, ` +
-        `or apply the "${LINEAR_LABELS.READY_FOR_QA_EXECUTION}" label to trigger execution automatically.`
+      `Plan for ${ticketId} is already on origin/main (${pr.commitSha.slice(0, 8)}) — already approved. ` +
+        `Trigger execution with --skip-plan-gate or the "${LINEAR_LABELS.READY_FOR_QA_EXECUTION}" label.`
     );
-    return EXIT_CODES.NEEDS_HUMAN;
+    return EXIT_CODES.VERIFIED;
   }
 
-  return EXIT_CODES.VERIFIED;
+  await linkPlanPrOnLinear(linearApiKey, ticketId, pr);
+  log(
+    'cli',
+    `Plan gate: review and MERGE the plan PR to approve, then trigger execution ` +
+      `(apply "${LINEAR_LABELS.READY_FOR_QA_EXECUTION}" or re-run with --skip-plan-gate). ` +
+      (pr.prUrl ? `PR: ${pr.prUrl}` : `Branch pushed: ${pr.branch} — open the PR manually.`)
+  );
+  return EXIT_CODES.NEEDS_HUMAN;
+}
+
+/** Plan artifacts to propose in the PR: the executable pair (feature + step
+ * definitions) plus human-review context (the plan table and the consolidated
+ * requirements). Only files that exist are included — steps are absent under
+ * --skip-steps. Paths are resolved against repoRoot so this does not depend on
+ * the process working directory. */
+function collectPlanFiles(
+  repoRoot: string,
+  ticketId: string,
+  plan: ScenarioPlan,
+  requirementsDoc: RequirementsDoc,
+  steps: StepGenerationResult | undefined
+): string[] {
+  const stepsPath = steps?.stepsPath || `tests/steps/${ticketId.toLowerCase()}.steps.ts`;
+  const candidates = [plan.featurePath, plan.planPath, requirementsDoc.requirementsPath, stepsPath];
+  return candidates.filter(
+    (p) => Boolean(p) && existsSync(`${repoRoot}${p.replace(/^\.\//, '')}`)
+  );
+}
+
+function planPrBody(
+  ticketId: string,
+  plan: ScenarioPlan,
+  steps: StepGenerationResult | undefined
+): string {
+  const lines = [
+    `Automated QA plan for ${ticketId}, proposed for review by bw-qa-loop.`,
+    '',
+    `- Scenarios: ${plan.scenarioCount}`,
+    `- Open questions: ${plan.openQuestions.length}` +
+      (plan.openQuestions.length ? ` — ${plan.openQuestions.join('; ')}` : ''),
+  ];
+  if (steps) {
+    lines.push(
+      `- Step definitions: ${steps.implementedSteps}/${steps.totalSteps} implemented` +
+        (steps.unimplementedSteps
+          ? `, ${steps.unimplementedSteps} blocked on unverified selectors (those scenarios will fail loudly, not report false coverage)`
+          : '')
+    );
+  }
+  lines.push(
+    '',
+    'Merging this PR approves the plan. Execution runs only the merged plan and',
+    'records its commit sha; nothing runs against an environment before merge.',
+    '',
+    `Refs ${ticketId}`
+  );
+  return lines.join('\n');
+}
+
+/** Posts the plan PR link back to the ticket so a webhook-driven run is
+ * reviewable without server access, and marks the ticket plan-pending. Failures
+ * here are non-fatal: the branch/PR already exists, so the plan is not lost. */
+async function linkPlanPrOnLinear(apiKey: string, ticketId: string, pr: PlanPr): Promise<void> {
+  try {
+    const ticket = await fetchTicket(apiKey, ticketId);
+    const body = pr.prUrl
+      ? `🧪 **QA plan proposed for review:** ${pr.prUrl}\n\n` +
+        `Merging this PR approves the plan. Execution runs only the merged plan and records its ` +
+        `commit (\`${pr.commitSha.slice(0, 8)}\`) — nothing runs against an environment before merge.`
+      : `🧪 **QA plan pushed** to branch \`${pr.branch}\` (\`${pr.commitSha.slice(0, 8)}\`). ` +
+        `Open a PR against main to request approval.`;
+    await postComment(apiKey, ticket.id, body);
+    try {
+      await addLabel(apiKey, ticket.id, LINEAR_LABELS.QA_PLAN_PENDING);
+    } catch (err) {
+      log('cli', `Could not apply "${LINEAR_LABELS.QA_PLAN_PENDING}" label: ${(err as Error).message}`);
+    }
+  } catch (err) {
+    logError(
+      'cli',
+      `Could not link the plan PR on Linear (${(err as Error).message}). PR/branch: ${pr.prUrl || pr.branch}`
+    );
+  }
 }
 
 // ─── Execution Pipeline ──────────────────────────────────────────────────────
@@ -261,8 +352,36 @@ async function runExecutionPipeline(opts: ExecutionOptions): Promise<number> {
   } = opts;
 
   // Look for the feature file written by the planning pipeline
-  const featurePath = `${workDir}/${ticketId.toLowerCase()}.feature`;
+  const slug = ticketId.toLowerCase();
+  const featurePath = `${workDir}/${slug}.feature`;
   const requirementsPath = `${workDir}/requirements.md`;
+  const stepsPath = `tests/steps/${slug}.steps.ts`;
+
+  // Approval gate. Re-planning is gone (see main), so the artifacts on disk are
+  // whatever a prior planning run produced. Before touching any environment,
+  // verify the feature and its step definitions are byte-for-byte the plan that
+  // was merged to main — merging the plan PR is the only approval, and this is
+  // what makes the executed feature provably the reviewed one.
+  const repoRoot = new URL('../../', import.meta.url).pathname;
+  const approval = await verifyPlanApproved({
+    ticket: ticketId,
+    repoRoot,
+    files: [featurePath, stepsPath],
+  });
+  if (!approval.approved) {
+    logError('cli', `Refusing to execute ${ticketId}: ${approval.reason}`);
+    return EXIT_CODES.NEEDS_HUMAN;
+  }
+  writeFileSync(
+    `${workDir}/plan-approval.json`,
+    JSON.stringify(approval, null, 2) + '\n',
+    'utf-8'
+  );
+  log(
+    'cli',
+    `Approved plan verified against origin/main (${approval.mergedCommit?.slice(0, 8)}); executing ` +
+      approval.files.map((f) => `${f.path}@${f.sha.slice(0, 8)}`).join(', ') + '.'
+  );
 
   // Stage 3: executor
   const { selectorReport, verdicts } = await runExecutorAgent(
@@ -291,6 +410,7 @@ async function runExecutionPipeline(opts: ExecutionOptions): Promise<number> {
       verdicts,
       overallStatus: 'needs-human',
       reportPath: '',
+      approvedCommit: approval.mergedCommit,
     }, slackWebhookUrl);
     return EXIT_CODES.NEEDS_HUMAN;
   }
@@ -321,6 +441,7 @@ async function runExecutionPipeline(opts: ExecutionOptions): Promise<number> {
     bugReport,
     overallStatus,
     reportPath,
+    approvedCommit: approval.mergedCommit,
   };
 
   // Stage 5: status-reporter
@@ -455,18 +576,18 @@ function escapeHtml(s: string): string {
 // ─── Help ────────────────────────────────────────────────────────────────────
 
 function printHelp(): void {
-  console.log(`bw-qa-loop — 5-agent QA pipeline: Linear → requirements → Gherkin → execution → bug analysis → report
+  console.log(`bw-qa-loop — 6-agent QA pipeline: Linear → requirements → Gherkin → steps → execution → bug analysis → report
 
 Pipelines:
-  "ready for QA" label     →  requirements-reviewer + test-planner (plan gate)
-  "ready for QA execution" →  executor → bug-analyser → status-reporter
+  "ready for QA" label     →  requirements → plan → steps → open plan PR (merge to approve)
+  "ready for QA execution" →  verify merged plan → executor → bug-analyser → status-reporter
 
 Direct usage:
-  bw-qa-loop <TICKET-ID>                  Planning pipeline (stops at plan gate)
-  bw-qa-loop <TICKET-ID> --dry-run        Requirements + scenarios + steps, no gate, no execution
+  bw-qa-loop <TICKET-ID>                  Planning pipeline → opens a plan PR (merge it to approve)
+  bw-qa-loop <TICKET-ID> --dry-run        Requirements + scenarios + steps, no PR, no execution
   bw-qa-loop <TICKET-ID> --skip-steps     Skip step-definition generation
-  bw-qa-loop <TICKET-ID> --skip-plan-gate Full pipeline (planning + execution)
-  bw-qa-loop <TICKET-ID> --env=sandbox    Execution against one environment only
+  bw-qa-loop <TICKET-ID> --skip-plan-gate Execute the approved (merged) plan — no re-planning
+  bw-qa-loop <TICKET-ID> --env=sandbox    Execute against one environment only
   bw-qa-loop webhook                      Start webhook server (label-driven automation)
   bw-qa-loop doctor                       Check Docker, env vars, storageState files
 

@@ -126,6 +126,13 @@ function renderLinearComment(summary: RunSummary): string {
     envIssueSection = `\n## Environment Issues (not product bugs)\n\n${issueLines}`;
   }
 
+  // Provenance: the exact merged plan these results came from, so a reader can
+  // tie the verdict to the reviewed-and-approved plan rather than trust that
+  // "some plan for this ticket" ran.
+  const provenance = summary.approvedCommit
+    ? `\n_Executed the approved plan merged at \`${summary.approvedCommit.slice(0, 8)}\`._`
+    : '';
+
   return `## ${statusEmoji} QA Automation — ${summary.ticket}
 
 **Status:** ${summary.overallStatus}
@@ -135,6 +142,7 @@ ${envLines}
 ${nonRunSection}
 ${bugSection}
 ${envIssueSection}
+${provenance}
 
 _Automated by bw-qa-loop. Product-behavior failures require human follow-up — this tool does not auto-retry those._`;
 }

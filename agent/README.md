@@ -54,22 +54,41 @@ the executor drives a real browser.
    annotation grounded in `selector-registry.json`. The `.md` plan table
    carries Priority and Severity columns. The planner only returns
    `needs-human` if it could produce **zero** scenarios.
-3. **[PLAN GATE]** — the run stops here by default. A human reviews the
-   generated `.feature` + `.md`, then either re-runs with
-   `--skip-plan-gate` or applies the **"ready for QA execution"** label to
-   trigger execution. This gate is non-negotiable — see the SOP's
-   review-gate rationale.
+   Between the planner and the gate, the **step-generator**
+   (`agents/stepGenerator.ts`) writes the `tests/steps/<ticket>.steps.ts`
+   glue: playwright-bdd cannot compile a `.feature` with undefined steps, so
+   the glue is part of the plan, not part of execution. A step whose UI is
+   not in the registry is emitted as a
+   `throw new Error('UNIMPLEMENTED_STEP: …')` rather than a guessed locator.
+3. **[PLAN GATE — a pull request]** — the run stops here by default. Planning
+   commits the `.feature`, plan `.md`, `requirements.md`, and step
+   definitions to a per-ticket branch (`qa-plan/<ticket>`), opens a PR, and
+   links it on the Linear ticket. **Merging the PR is the approval.** A human
+   reviews the plan *and its glue and needed selectors* in the PR, then
+   triggers execution (`--skip-plan-gate` or the **"ready for QA execution"**
+   label). This gate is non-negotiable — see the SOP's review-gate rationale.
+   The plan branch is proposed via git plumbing against a temporary index, so
+   it never disturbs whatever working tree the operator or webhook server has
+   open.
 
 ### Execution pipeline — trigger: Linear label **"ready for QA execution"** (or `--skip-plan-gate`)
 
-4. **executor** (`agents/executor.ts`) — first validates that every
-   selector the feature file references (`# selector: <key>`) is already in
-   the registry. Any unknown selector stops the run with `needs-human`,
-   because this stage **cannot** autonomously discover a selector for UI it
-   has never seen (see "Capturing new selectors" below). If selectors check
-   out, it runs the `.feature` file with the repo-root Playwright +
-   playwright-bdd setup against each environment, using a pre-captured
-   `storageState` for auth.
+Execution first re-plans **nothing**. It verifies the `.feature` and step
+definitions on disk are byte-for-byte the plan that was merged to `main`
+(`verifyPlanApproved`), refusing to run an unapproved or drifted plan, and
+records the merged commit sha so the executed feature is provably the
+reviewed one. Plan generation is nondeterministic, so "a plan for this
+ticket was approved once" says nothing about the bytes about to run.
+
+4. **executor** (`agents/executor.ts`) — first validates selectors from the
+   **generated step definitions**, not from planner `# selector:` comments:
+   every step either resolves to a registry-verified locator or carries an
+   `UNIMPLEMENTED_STEP` throw, and any such throw stops the run with
+   `needs-human`, because this stage **cannot** autonomously discover a
+   selector for UI it has never seen (see "Capturing new selectors" below).
+   If selectors check out, it runs the `.feature` file with the repo-root
+   Playwright + playwright-bdd setup against each environment, using a
+   pre-captured `storageState` for auth.
 5. **bug-analyser** (`agents/bugAnalyser.ts`) — runs *after* the executor
    (it classifies the executor's verdicts, so it can't start earlier). A
    Claude call classifies each failure as `product-bug`, `env-flakiness`,
@@ -168,10 +187,10 @@ Google Docs, and webhook settings.
 Then, from the repo root:
 
 ```bash
-./agent/bin/bw-qa-loop FINOPS-456                    # planning pipeline (stops at the plan gate)
-./agent/bin/bw-qa-loop FINOPS-456 --dry-run          # requirements + scenarios only, no gate, no execution
-./agent/bin/bw-qa-loop FINOPS-456 --skip-plan-gate   # full pipeline (planning + execution)
-./agent/bin/bw-qa-loop FINOPS-456 --env=sandbox      # execution against one environment only
+./agent/bin/bw-qa-loop FINOPS-456                    # planning pipeline → opens a plan PR (merge it to approve)
+./agent/bin/bw-qa-loop FINOPS-456 --dry-run          # requirements + scenarios + steps only, no PR, no execution
+./agent/bin/bw-qa-loop FINOPS-456 --skip-plan-gate   # execute the approved (merged) plan — no re-planning
+./agent/bin/bw-qa-loop FINOPS-456 --env=sandbox      # execute against one environment only
 ./agent/bin/bw-qa-loop webhook                       # start the label-driven webhook server
 ./agent/bin/bw-qa-loop doctor                        # check Docker, env vars, storageState files
 ```
